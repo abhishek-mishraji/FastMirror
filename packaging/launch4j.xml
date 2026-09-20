@@ -12,11 +12,12 @@
   Build:
     1. gradlew.bat fatJar
     2. launch4jc.exe packaging\launch4j.xml
-    3. copy a Java 21 runtime into the output folder as jre\
-       (jlink --add-modules java.base,java.logging,jdk.unsupported produces a small one;
-        jdk.unsupported is REQUIRED - it exports com.sun.nio.file.ExtendedWatchEventModifier,
-        which is how the recursive FILE_TREE watch is registered (C-5). Without it the agent
-        fails at startup.)
+    3. build the bundled runtime into the output folder as jre\ using jlink, with the module
+       set "java.base,jdk.unsupported" (confirmed by jdeps against the built jar).
+
+       jdk.unsupported is REQUIRED. It exports com.sun.nio.file.ExtendedWatchEventModifier,
+       which is how the recursive FILE_TREE watch is registered (C-5). Without that module the
+       agent fails at startup.
 -->
 <launch4jConfig>
     <dontWrapJar>false</dontWrapJar>
@@ -35,13 +36,25 @@
     <icon></icon>
 
     <jre>
-        <!-- The bundled runtime, relative to the exe. No installed JRE is used or required. -->
+        <!--
+          The bundled runtime, relative to the exe.
+
+          minVersion and maxVersion are deliberately EMPTY. In Launch4j, setting a version range
+          turns the bundled JRE into a preference and allows a fallback search of installed Java.
+          That was verified here: with the jre\ folder renamed away, the exe happily started on an
+          installed JDK instead. On a store PC that would mean a mis-copied jre\ folder silently
+          launching the agent on whatever Java happens to be present - possibly Java 8, failing in
+          a confusing way at runtime rather than a clear way at startup.
+
+          With no version range, the bundled runtime is mandatory and its absence is an immediate,
+          obvious error.
+        -->
         <path>jre</path>
         <bundledJre64Bit>true</bundledJre64Bit>
         <bundledJreAsFallback>false</bundledJreAsFallback>
-        <minVersion>21</minVersion>
+        <minVersion></minVersion>
         <maxVersion></maxVersion>
-        <jdkPreference>jdkOnly</jdkPreference>
+        <jdkPreference>jreOnly</jdkPreference>
         <runtimeBits>64</runtimeBits>
         <!-- NFR-04: the agent streams through a 64 KB buffer and never loads a file into memory,
              so a small heap is deliberate and makes a runaway allocation fail loudly. -->

@@ -43,14 +43,14 @@ class MirrorServiceImplTest {
     private MirrorServiceImpl service;
     private Map<String, String> values;
 
-    private record Submission(Path relative, boolean createSeen) {}
+    private record Submission(Path relative, boolean nameReuseCandidate) {}
 
     private static final class RecordingQueue implements CopyQueue {
         private final List<Submission> submissions = new CopyOnWriteArrayList<>();
 
         @Override
-        public void submit(Path relative, long eventNanos, boolean followedCreateEvent) {
-            submissions.add(new Submission(relative, followedCreateEvent));
+        public void submit(Path relative, long eventNanos, boolean nameReuseCandidate) {
+            submissions.add(new Submission(relative, nameReuseCandidate));
         }
 
         @Override
@@ -150,7 +150,7 @@ class MirrorServiceImplTest {
     }
 
     @Test
-    @DisplayName("FR-02: a CREATE for a regular file is submitted, flagged as a create")
+    @DisplayName("FR-02: a CREATE for a regular file is submitted")
     void createIsSubmitted() throws Exception {
         startService();
         final Path file = createSourceFile("PJR9.xml");
@@ -159,11 +159,67 @@ class MirrorServiceImplTest {
         await(() -> !queue.submissions.isEmpty(), "the file to be submitted");
 
         assertEquals(Path.of("PJR9.xml"), queue.submissions.get(0).relative());
-        assertTrue(queue.submissions.get(0).createSeen(), "FR-31 depends on this flag");
     }
 
     @Test
-    @DisplayName("FR-03: a MODIFY is submitted and is not flagged as a create")
+    @DisplayName("FR-31: an ordinary new file is NOT flagged as filename reuse")
+    void plainCreateIsNotReuse() throws Exception {
+        // Windows reports an ordinary new file as CREATE then MODIFY. Treating a bare CREATE as
+        // reuse made a live agent warn about files that had only ever been written once, and the
+        // README asks the operator to act on those warnings.
+        startService();
+        final Path file = createSourceFile("fresh.xml");
+
+        service.accept(new FileEvent(FileEventKind.CREATED, file, System.nanoTime()));
+        service.accept(new FileEvent(FileEventKind.MODIFIED, file, System.nanoTime()));
+        await(() -> queue.submissions.size() >= 2, "both events to be handled");
+
+        assertTrue(
+                queue.submissions.stream().noneMatch(Submission::nameReuseCandidate),
+                "a file that was never deleted cannot be a reused name");
+    }
+
+    @Test
+    @DisplayName("FR-31: a CREATE after a DELETE for the same path IS flagged as filename reuse")
+    void recreatedPathIsFlaggedAsReuse() throws Exception {
+        startService();
+        final Path file = createSourceFile("PJR9.xml");
+
+        service.accept(new FileEvent(FileEventKind.CREATED, file, System.nanoTime()));
+        await(() -> !queue.submissions.isEmpty(), "the first copy");
+
+        service.accept(new FileEvent(FileEventKind.DELETED, file, System.nanoTime()));
+        quiesce();
+        service.accept(new FileEvent(FileEventKind.CREATED, file, System.nanoTime()));
+        await(() -> queue.submissions.size() >= 2, "the recreated file to be submitted");
+
+        assertFalse(queue.submissions.get(0).nameReuseCandidate(), "the first create is not reuse");
+        assertTrue(
+                queue.submissions.get(queue.submissions.size() - 1).nameReuseCandidate(),
+                "delete then create under the same name is exactly the U-1 signal");
+    }
+
+    @Test
+    @DisplayName("the reuse flag is consumed once, not left set for later events")
+    void reuseFlagIsConsumedOnce() throws Exception {
+        startService();
+        final Path file = createSourceFile("once.xml");
+
+        service.accept(new FileEvent(FileEventKind.DELETED, file, System.nanoTime()));
+        quiesce();
+        service.accept(new FileEvent(FileEventKind.CREATED, file, System.nanoTime()));
+        await(() -> !queue.submissions.isEmpty(), "the recreate");
+        service.accept(new FileEvent(FileEventKind.CREATED, file, System.nanoTime()));
+        await(() -> queue.submissions.size() >= 2, "a later create");
+
+        assertTrue(queue.submissions.get(0).nameReuseCandidate());
+        assertFalse(
+                queue.submissions.get(1).nameReuseCandidate(),
+                "the delete has already been accounted for");
+    }
+
+    @Test
+    @DisplayName("FR-03: a MODIFY is submitted and is never treated as reuse")
     void modifyIsSubmitted() throws Exception {
         startService();
         final Path file = createSourceFile("PJR9.xml");
@@ -171,7 +227,7 @@ class MirrorServiceImplTest {
         service.accept(new FileEvent(FileEventKind.MODIFIED, file, System.nanoTime()));
         await(() -> !queue.submissions.isEmpty(), "the file to be submitted");
 
-        assertFalse(queue.submissions.get(0).createSeen());
+        assertFalse(queue.submissions.get(0).nameReuseCandidate());
     }
 
     @Test

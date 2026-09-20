@@ -113,7 +113,7 @@ No change of any kind is required in the existing agent.
 | **Mirror folder** | The destination directory tree. Configured as `MIRROR_FOLDER`. Written only by FastMirror. |
 | **Relative path** | A file's path relative to the source root, e.g. `store001\report.xml`. |
 | **Target file** | `MIRROR_FOLDER` + relative path. |
-| **Staging file** | A temporary file `<target>.fmtmp` used during a copy and renamed into place on completion. |
+| **Staging file** | A temporary file `<target>.<attempt>.fmtmp` used during a copy and renamed into place on completion. The attempt counter makes the name unique per copy attempt, so no two attempts can interfere (§9.5). |
 | **Copy job** | One unit of work: copy one source file to its target. |
 | **Capture latency** | Milliseconds from receiving a filesystem event to the source file handle being successfully opened. |
 | **Vanished** | The source file no longer existed when FastMirror first tried to open it. Nothing was captured. |
@@ -364,7 +364,7 @@ Each rule below must fail fast with a clear, actionable message and exit code `1
 | **FR-28** | **When a transfer fails with zero bytes read, nothing shall be published; the outcome shall be `FAILED`, or `VANISHED` if the cause was the file's disappearance before the open.** | **Must** |
 | **FR-29** | **No exception arising from a source file shall escape a copy job. Every copy job shall terminate in exactly one `CopyOutcome`.** | **Must** |
 | **FR-30** | **The agent shall hold no more than `COPY_WORKERS` source handles concurrently and shall close each in a `finally` block or try-with-resources.** | **Must** |
-| **FR-31** | **When a copy replaces a target whose content differs from a version already published under the same relative path, the agent shall log a `WARN` line naming the path. This is a measurement of filename reuse (U-1, R-10), not an error.** | **Should** |
+| **FR-31** | **When a path is created again after having been deleted, and the mirror still holds the earlier version, the agent shall log one `WARN` line naming that path. This measures filename reuse (U-1, R-10) and is not an error. A bare `ENTRY_CREATE` is explicitly *not* sufficient: Windows reports an ordinary new file as CREATE followed by MODIFY, and treating that as reuse produced false alarms on a running agent. Since operators are asked to act on these lines, a false alarm is worse than no detection.** | **Should** |
 
 ---
 
@@ -460,7 +460,7 @@ copy(relative, eventTimeNanos):
 
     source  = SOURCE_FOLDER.resolve(relative)
     target  = MIRROR_FOLDER.resolve(relative)
-    staging = target + ".fmtmp"
+    staging = target + "." + nextAttemptNumber() + ".fmtmp"   # unique per attempt
 
     createDirectories(target.parent)          # cached; mirror side only
 
@@ -504,10 +504,7 @@ copy(relative, eventTimeNanos):
 
         setLastModifiedTime(staging, sourceMtime)
 
-        try:
-            move(staging, target, ATOMIC_MOVE)
-        catch AtomicMoveNotSupportedException:
-            move(staging, target, REPLACE_EXISTING)
+        publish(staging, target)                       # retries; see below
 
         if failure != null:  return PARTIAL             # FR-27
         return targetExisted ? REPLACED : COPIED
@@ -527,6 +524,8 @@ Mandatory details:
 - **The transfer loop is explicit.** A bounded 64 KB `ByteBuffer` is read from the source channel and written to the staging channel. `transferTo`, `transferFrom`, `map` and `Files.copy` are prohibited by NI-3 and NI-4. On Windows `transferTo` memory-maps the source in chunks, and `Files.copy` uses a share mode that is not ours to choose. Neither was measured to break the producer on the current platform (C-9), but both introduce a version-dependent risk to the prime directive in exchange for no benefit, so neither is used.
 - **A read failure does not lose the prefix.** The loop breaks, the staging file is closed, and if any bytes were captured they are published (FR-27). This is §1.2.
 - **The staging file must be in the same directory as the target**, so the move is a same-volume directory-entry swap and therefore atomic.
+- **The staging file name must be unique per attempt.** A single shared `<target>.fmtmp` name is correct only while no two attempts for one path ever overlap. A running agent showed that assumption failing — a staging file disappeared between being written and being timestamped — so each attempt now owns a name no other attempt can produce. The `.fmtmp` suffix is kept so FR-18 and FR-22 still match.
+- **Publishing retries.** `move(staging, target)` fails with `AccessDeniedException` while another process holds the target open, and in production the HOR AWS Sync Agent is doing exactly that: reading files out of the mirror to upload them. A scanner or indexer can do the same. The publish therefore retries up to 10 times with a doubling backoff capped at 250 ms, falling back to `REPLACE_EXISTING` if `ATOMIC_MOVE` is unsupported, before giving up with `FAILED`. Retrying here is safe in a way retrying a source open is not: the target belongs to FastMirror, so no retry pressure reaches the producer (NI-11 constrains the source side only).
 - **The staging file must be deleted on every failure path.** A `finally` block is required.
 - **Capture latency** = `(time of successful open − eventTimeNanos)` in milliseconds, recorded for logging and statistics.
 - **Nothing escapes.** The outer `catch Throwable` guarantees FR-29: a copy job always ends in exactly one outcome and never kills a worker thread.
@@ -661,6 +660,7 @@ The implementer must make each of these behave exactly as stated.
 | Target already correct | `UNCHANGED`. No write, no timestamp change, so downstream consumers see no event. |
 | Partial target, source still present | The size mismatch (§9.4) causes the next event or sweep to re-copy it in full. Converges. |
 | Partial target, source already gone | The partial content is all that exists anywhere. It is retained. See R-7. |
+| A consumer holds the mirrored target open | The publish retries with backoff for up to about a second. This is expected, not exceptional: the sync agent reads the mirror in order to upload it. If the hold outlasts the retries, `FAILED` and the sweep tries again later. |
 | Mirror volume full | `FAILED`, staging file deleted, error logged with the path. The agent keeps running and keeps retrying via the sweep. The producer is unaffected. |
 | Mirror folder deleted while running | Recreated on the next copy. If recreation fails, `FAILED` and log. |
 | Source folder deleted while running | The watch becomes invalid; per FR-23 log and exit non-zero so a service manager can restart the agent. |
@@ -813,7 +813,7 @@ These are properties of the target environment that are not yet known. Each has 
 
 | ID | Unknown | Current assumption | How it gets resolved |
 |---|---|---|---|
-| U-1 | Does the producer reuse filenames with differing content? | Assumed unique. §11 accepts that the mirror keeps only the latest version of each path. | FR-31 logs every content-changing replacement. A 24-hour soak (DoD 6) answers it. If reuse is real, R-10's mitigation is designed then. |
+| U-1 | Does the producer reuse filenames with differing content? | Assumed unique. §11 accepts that the mirror keeps only the latest version of each path. | FR-31 logs each path that is deleted and then created again while the mirror still holds the earlier version. Verified on a running agent to produce no false alarms across 100 ordinary new files, and to fire exactly once for a genuine delete-then-recreate. A 24-hour soak (DoD 6) answers the question. If reuse is real, R-10's mitigation is designed then. |
 | U-2 | Does the source tree contain subdirectories? | Assumed it may. Recursive watch and structure preservation are built regardless (FR-01, FR-06); the cost of supporting the flat case is zero. | Observed on the target PC. No action either way. |
 | U-3 | Is the HOR AWS Sync Agent running and watching `MIRROR_FOLDER`? | Not yet. `MIRROR_FOLDER` defaults to `C:/temp` per §7.2. | Confirmed by the operator before deployment. IT-17 is marked unverified until then; nothing in the build depends on it. |
 

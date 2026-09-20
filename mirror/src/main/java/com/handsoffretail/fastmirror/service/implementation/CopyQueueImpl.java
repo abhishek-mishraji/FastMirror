@@ -81,7 +81,7 @@ public final class CopyQueueImpl implements CopyQueue {
     }
 
     @Override
-    public void submit(Path relative, long eventNanos, boolean followedCreateEvent) {
+    public void submit(Path relative, long eventNanos, boolean nameReuseCandidate) {
         Objects.requireNonNull(relative, "relative");
         if (!accepting) {
             return;
@@ -93,7 +93,7 @@ public final class CopyQueueImpl implements CopyQueue {
                 (path, existing) -> {
                     if (existing == null) {
                         dispatch[0] = true;
-                        return new Entry(State.QUEUED, eventNanos, followedCreateEvent);
+                        return new Entry(State.QUEUED, eventNanos, nameReuseCandidate);
                     }
                     return switch (existing.state()) {
                         // Already waiting: fold this event into the pending one. Keep the earliest
@@ -102,11 +102,11 @@ public final class CopyQueueImpl implements CopyQueue {
                                 new Entry(
                                         State.QUEUED,
                                         Math.min(existing.earliestEventNanos(), eventNanos),
-                                        existing.createSeen() || followedCreateEvent);
+                                        existing.createSeen() || nameReuseCandidate);
                         // A copy is in flight and the file changed again. Exactly one further copy
                         // will run after it, measured from this event.
                         case RUNNING, RUNNING_DIRTY ->
-                                new Entry(State.RUNNING_DIRTY, eventNanos, followedCreateEvent);
+                                new Entry(State.RUNNING_DIRTY, eventNanos, nameReuseCandidate);
                     };
                 });
 

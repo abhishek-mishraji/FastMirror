@@ -375,6 +375,99 @@ class AtomicFileCopierImplTest {
     // ------------------------------------------------------------------ CONTENT_VERIFY
 
     @Test
+    @DisplayName("concurrent copies of one path never destroy each other's staging file")
+    void concurrentCopiesOfOnePathDoNotInterfere() throws Exception {
+        // Regression test. A shared <target>.fmtmp staging name was correct only while no two
+        // attempts for the same path ever overlapped. Running the real agent showed that failing:
+        // a staging file vanished between being written and being timestamped, and the copy ended
+        // in FAILED. Each attempt now owns a staging file no other attempt can name.
+        final byte[] content = bytes(256 * 1024);
+        writeSource("contended.xml", content);
+
+        final FileCopier copier = copier();
+        final int threads = 8;
+        final int copiesPerThread = 12;
+        final java.util.concurrent.CountDownLatch startLine = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(threads);
+        final List<CopyResult> results = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        for (int i = 0; i < threads; i++) {
+            final Thread worker =
+                    new Thread(
+                            () -> {
+                                try {
+                                    startLine.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                                    for (int c = 0; c < copiesPerThread; c++) {
+                                        results.add(
+                                                copier.copy(Path.of("contended.xml"), System.nanoTime(), false));
+                                    }
+                                } catch (final InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                } finally {
+                                    done.countDown();
+                                }
+                            });
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        startLine.countDown();
+        assertTrue(done.await(60, java.util.concurrent.TimeUnit.SECONDS), "all copies should finish");
+
+        assertEquals(threads * copiesPerThread, results.size());
+        final List<String> failures =
+                results.stream()
+                        .filter(result -> result.outcome() == CopyOutcome.FAILED)
+                        .map(result -> String.valueOf(result.cause()))
+                        .toList();
+        assertEquals(
+                List.of(),
+                failures,
+                "no copy may fail through interference between attempts");
+        assertArrayEquals(
+                content,
+                Files.readAllBytes(mirrorRoot.resolve("contended.xml")),
+                "the target must be complete, never torn by an overlapping attempt");
+        assertEquals(List.of("contended.xml"), mirrorNames(), "no staging file may be left behind");
+    }
+
+    @Test
+    @DisplayName("a consumer holding the target open does not cost us the copy")
+    void publishSurvivesAConsumerHoldingTheTarget() throws Exception {
+        // The real scenario, not a hypothetical: in production the HOR AWS Sync Agent reads files
+        // out of the mirror folder to upload them, so it can have a target open at the exact moment
+        // FastMirror tries to replace it. Windows fails that move with AccessDeniedException.
+        // Losing a copy over a collision we fully expect would be a poor trade, so publish retries.
+        final byte[] first = bytes(1024);
+        final byte[] second = bytes(2048);
+        writeSource("consumed.xml", first);
+        final FileCopier copier = copier();
+        assertEquals(CopyOutcome.COPIED, copier.copy(Path.of("consumed.xml"), System.nanoTime(), true).outcome());
+
+        // A separate process opens the mirrored file with FileShare.None, as a consumer might.
+        final Path target = mirrorRoot.resolve("consumed.xml");
+        final String script =
+                "$f=[System.IO.File]::Open('" + target.toString().replace("'", "''")
+                        + "','Open','Read','None'); Start-Sleep -Milliseconds 400; $f.Close()";
+        final Process holder =
+                new ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+                        .redirectErrorStream(true)
+                        .start();
+        Thread.sleep(120L);
+
+        writeSource("consumed.xml", second);
+        final CopyResult result = copier.copy(Path.of("consumed.xml"), System.nanoTime(), false);
+        holder.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertEquals(
+                CopyOutcome.REPLACED,
+                result.outcome(),
+                "the copy must survive the consumer's hold, cause: " + result.cause());
+        assertArrayEquals(second, Files.readAllBytes(target));
+        assertEquals(List.of("consumed.xml"), mirrorNames(), "no staging file left behind");
+    }
+
+    @Test
     @DisplayName("contentsDiffer compares the actual bytes")
     void contentsDifferComparesBytes() throws Exception {
         writeSource("h.xml", "identical".getBytes(StandardCharsets.UTF_8));

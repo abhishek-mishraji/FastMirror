@@ -19,13 +19,16 @@ public interface FileCopier {
      * @param relative            the path of the file relative to both roots
      * @param eventNanos          the {@link System#nanoTime()} stamp of the event that asked for
      *                            this copy, used to measure capture latency
-     * @param followedCreateEvent whether the work was triggered by a CREATE rather than a MODIFY or
-     *                            a sweep. Combined with the prior existence of the target, this is
-     *                            what distinguishes a producer rewriting a file from a producer
-     *                            reusing a file name for new content (FR-31, U-1).
+     * @param nameReuseCandidate  whether this path was created again after having been deleted.
+     *                            Combined with the prior existence of the target, that is what
+     *                            distinguishes a producer rewriting a file from a producer reusing
+     *                            a file name for new content (FR-31, U-1). A plain CREATE is not
+     *                            enough on its own: an ordinary new file is routinely reported as
+     *                            CREATE followed by MODIFY, and treating that as reuse produced
+     *                            false alarms on a live agent.
      * @return the outcome; never {@code null}, and this method never throws
      */
-    CopyResult copy(Path relative, long eventNanos, boolean followedCreateEvent);
+    CopyResult copy(Path relative, long eventNanos, boolean nameReuseCandidate);
 
     /**
      * Whether the source and the target hold different bytes.

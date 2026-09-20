@@ -109,7 +109,7 @@ You may also see:
 [WARN] Filename reused: a newly created source file replaced an already mirrored file at the same path: PJR9.xml
 ```
 
-This means Gemcom reused a filename for new content. FastMirror keeps only the latest version of each path, so if the AWS agent had not yet uploaded the earlier one, it is gone. **If these lines appear, report them** — it is a known open question (SRS U-1 / R-10) with a designed fix that has not been built because we do not yet know whether it is needed.
+This means Gemcom deleted a file and then created another one under the same name, while the mirror still held the earlier version. FastMirror keeps only the latest version of each path, so if the AWS agent had not yet uploaded the earlier one, it is gone. The check is deliberately narrow — an ordinary new file never triggers it — so these lines are worth taking at face value. **If these lines appear, report them** — it is a known open question (SRS U-1 / R-10) with a designed fix that has not been built because we do not yet know whether it is needed.
 
 ---
 
@@ -133,7 +133,28 @@ gradlew.bat slowTest       the heavy scenarios: throughput, overflow, 50 MB atom
 gradlew.bat fatJar         produces mirror\build\libs\FastMirror.jar
 ```
 
-To produce the executable, run Launch4j against `packaging\launch4j.xml`, then copy a Java 21 runtime into the output folder as `jre\`. The runtime **must** include the `jdk.unsupported` module: it exports the API used to register the recursive directory watch, and the agent will not start without it.
+### Producing `FastMirror.exe`
+
+Three commands, from the project root in `cmd`. Requires [Launch4j](https://launch4j.sourceforge.net/) installed.
+
+```bat
+gradlew.bat fatJar
+
+jlink --add-modules java.base,jdk.unsupported --strip-debug --no-header-files --no-man-pages --compress=zip-6 --output build\dist\jre
+
+"C:\Program Files (x86)\Launch4j\launch4jc.exe" packaging\launch4j.xml
+```
+
+That leaves `build\dist\FastMirror.exe` and `build\dist\jre\` (about 30 MB). Copy both, plus a `.env` built from `packaging\env.template`, to the target machine.
+
+`jlink` refuses to write into an existing directory, so delete `build\dist\jre` before re-running it.
+
+Two things about that module list, both verified rather than assumed:
+
+- It is exactly what the agent needs — `jdeps --print-module-deps --ignore-missing-deps mirroruild\libs\FastMirror.jar` reports `java.base,jdk.unsupported` and nothing else.
+- **`jdk.unsupported` is mandatory.** It exports the API used to register the recursive directory watch. Drop it and the agent fails at startup.
+
+The Launch4j config deliberately sets no `minVersion`. Setting one turns the bundled runtime into a mere preference and lets the exe fall back to whatever Java is installed — which was observed here: with `jre\` renamed away, the exe happily started on an installed JDK. On a store PC that would mean a mis-copied `jre\` folder silently running the agent on the wrong Java. With no version range the bundled runtime is required, and its absence is an immediate error instead of a subtle one.
 
 ### Layout
 

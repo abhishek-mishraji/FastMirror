@@ -43,8 +43,10 @@ class TreeSweepServiceImplTest {
         private final List<Path> submitted = new CopyOnWriteArrayList<>();
 
         @Override
-        public void submit(Path relative, long eventNanos, boolean followedCreateEvent) {
-            assertFalse(followedCreateEvent, "a sweep is not an event, so it is never a CREATE");
+        public void submit(Path relative, long eventNanos, boolean nameReuseCandidate) {
+            assertFalse(
+                    nameReuseCandidate,
+                    "a sweep sees no events, so it can never observe a delete-then-create");
             submitted.add(relative);
         }
 

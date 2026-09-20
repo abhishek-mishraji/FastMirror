@@ -27,6 +27,7 @@ import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The copy engine, and the only class in FastMirror that opens a file inside the source folder
@@ -71,12 +72,23 @@ public final class AtomicFileCopierImpl implements FileCopier {
     private static final long MAX_RETRY_DELAY_MS = 1_000L;
 
     /**
-     * Retries for the publish step only. Unlike the source open, the target lives in the mirror
-     * folder, which belongs to FastMirror, so retrying here puts no pressure on the producer.
+     * Retries for the publish step only.
+     *
+     * <p>Generous on purpose, and safe to be generous: the target lives in the mirror folder, which
+     * belongs to FastMirror, so retrying here puts no pressure whatsoever on the producer. NI-11
+     * constrains the source side only.
+     *
+     * <p>This is not a theoretical hardening. Replacing a target fails with
+     * {@code AccessDeniedException} while another process holds that file open, and in production
+     * the HOR AWS Sync Agent is doing exactly that - reading files out of the mirror folder in
+     * order to upload them. A scanner or indexer can do the same. Giving up after a few
+     * milliseconds would turn an ordinary, expected collision into a lost copy.
      */
-    private static final int PUBLISH_RETRY_ATTEMPTS = 3;
+    private static final int PUBLISH_RETRY_ATTEMPTS = 10;
 
-    private static final long PUBLISH_RETRY_DELAY_MS = 10L;
+    private static final long PUBLISH_RETRY_INITIAL_MS = 10L;
+
+    private static final long PUBLISH_RETRY_MAX_MS = 250L;
 
     private final MirrorConfig config;
     private final PathMapper mapper;
@@ -90,6 +102,9 @@ public final class AtomicFileCopierImpl implements FileCopier {
 
     /** Paths already seen to be replaced, so FR-31 logs once per path rather than per copy. */
     private final Set<Path> reportedReuse = ConcurrentHashMap.newKeySet();
+
+    /** Makes every staging file name unique to one copy attempt. */
+    private final AtomicLong stagingSequence = new AtomicLong();
 
     /**
      * How a source file is opened.
@@ -138,7 +153,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
     }
 
     @Override
-    public CopyResult copy(Path relative, long eventNanos, boolean followedCreateEvent) {
+    public CopyResult copy(Path relative, long eventNanos, boolean nameReuseCandidate) {
         Objects.requireNonNull(relative, "relative");
 
         final Path source;
@@ -177,7 +192,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
         // ---- can still write to and delete that file without error (C-8).
 
         try (SeekableByteChannel in = channel) {
-            return transfer(in, relative, source, target, staging, latencyMs, followedCreateEvent);
+            return transfer(in, relative, source, target, staging, latencyMs, nameReuseCandidate);
         } catch (final Throwable t) {
             // FR-29: a copy job always ends in exactly one outcome and never kills its worker.
             logger.error("Unexpected failure copying " + relative, t);
@@ -255,7 +270,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
             Path target,
             Path staging,
             long latencyMs,
-            boolean followedCreateEvent)
+            boolean nameReuseCandidate)
             throws IOException, InterruptedException {
 
         final FileTime sourceMtime = readMtime(source);
@@ -321,11 +336,21 @@ public final class AtomicFileCopierImpl implements FileCopier {
             return CopyResult.failed(latencyMs, transferFailure);
         }
 
-        if (sourceMtime != null) {
-            Files.setLastModifiedTime(staging, sourceMtime);
+        try {
+            if (sourceMtime != null) {
+                Files.setLastModifiedTime(staging, sourceMtime);
+            }
+            publish(staging, target);
+        } catch (final NoSuchFileException e) {
+            // Our own staging file went missing. With per-attempt names this can only be an
+            // outside actor, such as an antivirus scanner. Nothing was published, the target still
+            // holds its previous content, and the sweep will try again - so this is a WARN about
+            // one lost copy, not an ERROR about a broken agent.
+            logger.warn(
+                    "Staging file disappeared before it could be published, copy abandoned: "
+                            + relative + " (" + e.getMessage() + ")");
+            return CopyResult.failed(latencyMs, e);
         }
-
-        publish(staging, target);
 
         if (transferFailure != null) {
             // FR-27 / PD-2.
@@ -337,7 +362,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
             return CopyResult.partial(bytesCopied, declaredSize, latencyMs, transferFailure);
         }
 
-        if (targetExisted && followedCreateEvent) {
+        if (targetExisted && nameReuseCandidate) {
             reportPossibleNameReuse(relative);
         }
 
@@ -357,6 +382,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
      */
     private void publish(Path staging, Path target) throws IOException, InterruptedException {
         IOException lastFailure = null;
+        long delayMs = PUBLISH_RETRY_INITIAL_MS;
         for (int attempt = 0; attempt <= PUBLISH_RETRY_ATTEMPTS; attempt++) {
             try {
                 Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE);
@@ -364,15 +390,17 @@ public final class AtomicFileCopierImpl implements FileCopier {
             } catch (final AtomicMoveNotSupportedException e) {
                 Files.move(staging, target, StandardCopyOption.REPLACE_EXISTING);
                 return;
+            } catch (final NoSuchFileException e) {
+                // Our own staging file is gone; retrying cannot help.
+                throw e;
             } catch (final IOException e) {
-                // Observed once in a long soak: Windows can transiently refuse a rename when an
-                // antivirus scanner or indexer has the target open for a moment. Retrying is safe
-                // here in a way that retrying a source open is not - the target is inside the
-                // mirror folder, which belongs to FastMirror, so no retry pressure reaches the
-                // producer (NI-11 constrains the source side only).
+                // Almost always AccessDeniedException because another process has the target open
+                // - the sync agent uploading it, or a scanner. Transient by nature: back off and
+                // try again rather than lose a copy over a collision we expect to happen.
                 lastFailure = e;
                 if (attempt < PUBLISH_RETRY_ATTEMPTS) {
-                    sleeper.sleep(PUBLISH_RETRY_DELAY_MS);
+                    sleeper.sleep(delayMs);
+                    delayMs = Math.min(delayMs * 2L, PUBLISH_RETRY_MAX_MS);
                 }
             }
         }
@@ -380,8 +408,9 @@ public final class AtomicFileCopierImpl implements FileCopier {
     }
 
     /**
-     * FR-31: a CREATE event for a path we had already mirrored means the producer reused a file
-     * name for new content, which the current design does not preserve (R-10, U-1).
+     * FR-31: a path that was deleted and then created again, while the mirror still holds the
+     * earlier version, means the producer reused a file name for new content - which the current
+     * design does not preserve (R-10, U-1).
      *
      * <p>Logged once per path so a busy folder does not drown the log. This is a measurement, not
      * an error: it exists so the question "does Gemcom reuse filenames?" is answered from a log
@@ -398,9 +427,26 @@ public final class AtomicFileCopierImpl implements FileCopier {
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * A staging path for one copy attempt.
+     *
+     * <p>Always in the target's own directory, so the publish is a same-volume directory-entry swap
+     * and therefore atomic (C-7).
+     *
+     * <p>The name carries a per-attempt counter. A shared {@code <target>.fmtmp} name would be
+     * correct only as long as no two attempts for the same path ever overlap, and a running agent
+     * showed that assumption failing: a staging file disappeared between being written and being
+     * timestamped, because another attempt's cleanup removed it. Rather than rely on the queue's
+     * mutual exclusion holding under every interleaving, each attempt now owns a file no other
+     * attempt can name. The {@code .fmtmp} suffix is preserved, so the exclusion patterns (FR-18)
+     * and the startup cleanup (FR-22) still match.
+     */
     private Path stagingFor(Path target) {
-        // Same directory as the target, so the publish is an atomic directory-entry swap.
-        return target.resolveSibling(target.getFileName() + MirrorConfig.STAGING_SUFFIX);
+        return target.resolveSibling(
+                target.getFileName()
+                        + "."
+                        + Long.toUnsignedString(stagingSequence.incrementAndGet(), 36)
+                        + MirrorConfig.STAGING_SUFFIX);
     }
 
     private void ensureParentExists(Path target) throws IOException {

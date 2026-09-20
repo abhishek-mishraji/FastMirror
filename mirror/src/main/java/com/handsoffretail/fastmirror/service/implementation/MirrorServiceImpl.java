@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -49,6 +50,21 @@ public final class MirrorServiceImpl implements MirrorService {
     private final AppLogger logger;
 
     private final BlockingQueue<FileEvent> events = new LinkedBlockingQueue<>();
+
+    /**
+     * Paths seen deleted, so that a later CREATE for the same path can be recognised as the
+     * producer reusing a file name rather than as an ordinary new file (FR-31, U-1).
+     *
+     * <p>A plain CREATE is not a usable signal on its own. Windows reports an ordinary new file as
+     * CREATE followed by MODIFY, and a live agent duly warned about "reuse" for files that had only
+     * ever been written once. Since the README asks the operator to report these lines, a false
+     * alarm is worse than no detection at all.
+     *
+     * <p>Entries are removed as soon as they are consumed, so the set tracks only names that are
+     * currently gone from the source - bounded by how many files the producer has deleted and not
+     * yet recreated.
+     */
+    private final java.util.Set<Path> deletedPaths = ConcurrentHashMap.newKeySet();
 
     private volatile boolean accepting = true;
     private Thread eventThread;
@@ -142,8 +158,10 @@ public final class MirrorServiceImpl implements MirrorService {
         }
 
         if (event.kind() == FileEventKind.DELETED) {
-            // FR-04. Not "handled elsewhere" - genuinely nothing to do, ever. The mirror keeps
-            // what it has; that is the entire point of the agent.
+            // FR-04: no copying action, ever. The mirror keeps what it has; that is the entire
+            // point of the agent. The name is remembered only so that FR-31 can tell a recreated
+            // file apart from a new one. No I/O, so the event thread stays fast.
+            rememberDeleted(event.path());
             return;
         }
 
@@ -182,7 +200,18 @@ public final class MirrorServiceImpl implements MirrorService {
             return;
         }
 
-        queue.submit(relative, event.eventNanos(), event.kind() == FileEventKind.CREATED);
+        final boolean nameReuseCandidate =
+                event.kind() == FileEventKind.CREATED && deletedPaths.remove(relative);
+
+        queue.submit(relative, event.eventNanos(), nameReuseCandidate);
+    }
+
+    private void rememberDeleted(Path path) {
+        try {
+            deletedPaths.add(mapper.relativize(path));
+        } catch (final RuntimeException e) {
+            // Outside the source root, or the root itself. Nothing to remember.
+        }
     }
 
     private void mirrorDirectory(Path directory) {

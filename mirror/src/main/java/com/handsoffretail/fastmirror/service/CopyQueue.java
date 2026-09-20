@@ -24,9 +24,9 @@ public interface CopyQueue {
      *
      * @param relative            the path relative to both roots
      * @param eventNanos          {@link System#nanoTime()} at event receipt
-     * @param followedCreateEvent whether this was triggered by a CREATE (FR-31)
+     * @param nameReuseCandidate whether this path was created again after being deleted (FR-31)
      */
-    void submit(Path relative, long eventNanos, boolean followedCreateEvent);
+    void submit(Path relative, long eventNanos, boolean nameReuseCandidate);
 
     /** Paths currently queued or running. Zero when the queue is idle. */
     int pending();

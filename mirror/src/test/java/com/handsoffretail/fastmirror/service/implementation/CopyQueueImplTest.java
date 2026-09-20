@@ -64,7 +64,7 @@ class CopyQueueImplTest {
         }
 
         @Override
-        public CopyResult copy(Path relative, long eventNanos, boolean followedCreateEvent) {
+        public CopyResult copy(Path relative, long eventNanos, boolean nameReuseCandidate) {
             calls.computeIfAbsent(relative, key -> new AtomicInteger()).incrementAndGet();
             if (relative.equals(gatedPath)) {
                 entered.countDown();
@@ -275,6 +275,54 @@ class CopyQueueImplTest {
             queue.submit(Path.of("next.xml"), System.nanoTime(), false);
             assertTrue(queue.awaitIdle(IDLE_TIMEOUT));
             assertEquals(2, stats.results.size());
+        } finally {
+            queue.shutdown(Duration.ofSeconds(5));
+        }
+    }
+
+    @Test
+    @DisplayName("NI-10: two jobs for the same path never run at the same time")
+    void neverRunsTwoJobsForOnePathConcurrently() throws Exception {
+        // The invariant the whole copier design leans on. If it ever broke, two attempts would be
+        // writing one target at once, and a concurrency bug would show up as a corrupted mirror
+        // rather than as a failed test.
+        final java.util.concurrent.atomic.AtomicInteger concurrent = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger maxConcurrent = new java.util.concurrent.atomic.AtomicInteger();
+
+        final FileCopier watching =
+                new FileCopier() {
+                    @Override
+                    public CopyResult copy(Path relative, long eventNanos, boolean create) {
+                        final int now = concurrent.incrementAndGet();
+                        maxConcurrent.accumulateAndGet(now, Math::max);
+                        try {
+                            Thread.sleep(2L);
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            concurrent.decrementAndGet();
+                        }
+                        return CopyResult.completed(CopyOutcome.COPIED, 1L, 0L);
+                    }
+
+                    @Override
+                    public boolean contentsDiffer(Path relative) {
+                        return true;
+                    }
+                };
+
+        final Path hot = Path.of("one-path.xml");
+        final CopyQueueImpl queue = new CopyQueueImpl(new AlwaysStale(), watching, stats, logger, 8);
+        try {
+            for (int i = 0; i < 500; i++) {
+                queue.submit(hot, System.nanoTime(), false);
+            }
+            assertTrue(queue.awaitIdle(Duration.ofSeconds(30)));
+
+            assertEquals(
+                    1,
+                    maxConcurrent.get(),
+                    "at most one job per path may be in flight at any instant");
         } finally {
             queue.shutdown(Duration.ofSeconds(5));
         }
