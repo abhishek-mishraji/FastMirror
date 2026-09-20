@@ -43,6 +43,7 @@ class ApplicationStartupTest {
 
     @Test
     @DisplayName("IT-12: stale staging files are removed at startup")
+    @SuppressWarnings("try") // the agent is started for its side effect on the mirror folder
     void it12_removesStaleStagingFiles() throws Exception {
         Files.writeString(mirrorRoot.resolve("x.xml.fmtmp"), "left over from a crash");
         Files.writeString(mirrorRoot.resolve("keep.xml"), "a real mirrored file");

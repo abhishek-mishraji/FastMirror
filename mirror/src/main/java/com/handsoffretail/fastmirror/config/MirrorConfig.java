@@ -220,6 +220,7 @@ public record MirrorConfig(
      * <p>Deliberately not a probe file: FastMirror never creates, writes or deletes anything inside
      * the source folder, not even during startup validation (NI-7).
      */
+    @SuppressWarnings("try") // opening and closing the stream IS the readability test
     private static void validateSourceReadable(Path source) {
         try (DirectoryStream<Path> ignored = Files.newDirectoryStream(source)) {
             // Opening and closing the stream is the whole test.
