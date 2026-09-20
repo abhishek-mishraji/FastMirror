@@ -1,0 +1,23 @@
+# Build output
+build/
+.gradle/
+bin/
+out/
+
+# Local configuration - never committed
+.env
+
+# Runtime output
+logs/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+Thumbs.db
+desktop.ini
