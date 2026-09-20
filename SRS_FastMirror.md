@@ -161,7 +161,13 @@ The implementer must understand these before writing code, because the design de
 
 > Java exposes no API for setting the share mode. This behaviour is a JDK implementation detail, not a published contract. It is therefore **verified empirically by IT-18**, which fails the build if a JDK upgrade ever changes it.
 
-**C-9 — Memory mapping blocks deletion.** A file with an active mapped section cannot be deleted: the producer's `DeleteFile` fails with `ERROR_USER_MAPPED_FILE`, regardless of share mode. This makes `FileChannel.map` and `MappedByteBuffer` unusable on the source. It also rules out `FileChannel.transferTo` / `transferFrom`, because on Windows the JDK implements those by memory-mapping the source in chunks. See NI-4.
+**C-9 — Memory mapping is a version-dependent hazard, not a guaranteed failure.** `ERROR_USER_MAPPED_FILE` is the documented Windows error for operating on a file with an active mapped section, and on older Windows it makes a delete fail outright.
+
+> **Measured on the target class of machine (Windows 11 build 26200, JDK 21.0.10), it does not.** Both an in-process `Files.delete` and an external `cmd /c del` succeeded against a memory-mapped file, because modern Windows deletes by unlinking the name. Version 1.0 of this specification asserted the opposite; that assertion was wrong for this platform and has been corrected. The measurement is re-taken on every build by the platform-record test in §13.2 rather than assumed in either direction.
+>
+> This correction **does not relax NI-4.** Mapping remains forbidden because the behaviour is Windows-version and filesystem dependent, because it is documented to fail elsewhere and over SMB, because `FileChannel.transferTo` on Windows memory-maps the source in chunks and so inherits the same uncertainty, and because an explicit bounded read/write loop is equally fast, costs nothing to write and is required anyway by NFR-04's bounded-memory rule. Where the prime directive is concerned, an avoidable version-dependent risk is not worth taking for zero benefit.
+
+**C-9a — What was actually measured.** With FastMirror holding a source file open exactly as NI-1 specifies, a separate Windows process (`cmd.exe`) successfully deleted it, renamed it and appended to it, each returning exit code 0, while FastMirror's handle continued to read the original bytes. This is the empirical basis for PD-1 and C-2 and is verified by IT-18c, IT-19c and IT-20c.
 
 **C-10 — `Files.copy` does not use a share mode we control.** `java.nio.file.Files.copy(Path, Path, ...)` on Windows delegates to the Win32 copy API, whose source share mode is not under the caller's control and is more restrictive than NIO's. It must not be used on a source file. See NI-3.
 
@@ -176,7 +182,7 @@ These implement PD-1. Each is a hard prohibition; a violation is a defect of the
 | NI-1 | The source shall be opened **only** via `FileChannel.open(path, StandardOpenOption.READ)` or `Files.newByteChannel(path, READ)`. No other open call is permitted. | C-8: these grant `FILE_SHARE_DELETE` and `FILE_SHARE_WRITE`. |
 | NI-2 | `READ` shall be the only open option. `WRITE`, `APPEND`, `CREATE`, `CREATE_NEW`, `TRUNCATE_EXISTING`, `DELETE_ON_CLOSE` and `SYNC` are prohibited on the source. | Any write intent contends with the producer. |
 | NI-3 | `Files.copy(...)` shall never be called with a source-folder path as its source. | C-10. |
-| NI-4 | `FileChannel.map`, `MappedByteBuffer`, `FileChannel.transferTo` and `FileChannel.transferFrom` shall never be applied to a source channel. Transfers use an explicit bounded `ByteBuffer` read/write loop. | C-9. A mapped section makes the producer's delete fail. |
+| NI-4 | `FileChannel.map`, `MappedByteBuffer`, `FileChannel.transferTo` and `FileChannel.transferFrom` shall never be applied to a source channel. Transfers use an explicit bounded `ByteBuffer` read/write loop. | C-9. A mapped section is a version-dependent hazard to the producer's delete, is documented to fail on other Windows versions and over SMB, and buys nothing: an explicit loop is equally fast and is required by NFR-04 regardless. |
 | NI-5 | `FileChannel.lock` / `tryLock` shall never be called on a source file. | An OS-level lock blocks the producer directly. |
 | NI-6 | `java.io.FileInputStream`, `FileOutputStream` and `RandomAccessFile` shall never be used on a source file. | Share semantics are less predictable than NIO's; NI-1 is the only sanctioned path. |
 | NI-7 | FastMirror shall never write, create, delete, rename, move or truncate anything inside `SOURCE_FOLDER`. | Restates FR-16 as a non-interference rule. |
@@ -518,7 +524,7 @@ Mandatory details:
 
 - **Open before anything else.** Attribute reads, size checks and directory creation must not delay the `open()` call any more than necessary. Directory creation is listed first only because the staging file cannot otherwise be created; implementations cache the set of already-created directories to avoid repeating the syscall.
 - **Read `size()` from the open channel**, not from `Files.size(source)`, so the value describes the snapshot being copied. It is used only for the `MAX_COPY_BYTES` test; the transfer loop reads until end-of-stream, so a file that grows during the copy is still captured as far as it goes.
-- **The transfer loop is explicit.** A bounded 64 KB `ByteBuffer` is read from the source channel and written to the staging channel. `transferTo`, `transferFrom`, `map` and `Files.copy` are prohibited by NI-3 and NI-4 — on Windows they memory-map the source and would make the producer's delete fail with `ERROR_USER_MAPPED_FILE`. This is not a style preference; it is the prime directive.
+- **The transfer loop is explicit.** A bounded 64 KB `ByteBuffer` is read from the source channel and written to the staging channel. `transferTo`, `transferFrom`, `map` and `Files.copy` are prohibited by NI-3 and NI-4. On Windows `transferTo` memory-maps the source in chunks, and `Files.copy` uses a share mode that is not ours to choose. Neither was measured to break the producer on the current platform (C-9), but both introduce a version-dependent risk to the prime directive in exchange for no benefit, so neither is used.
 - **A read failure does not lose the prefix.** The loop breaks, the staging file is closed, and if any bytes were captured they are published (FR-27). This is §1.2.
 - **The staging file must be in the same directory as the target**, so the move is a same-volume directory-entry swap and therefore atomic.
 - **The staging file must be deleted on every failure path.** A `finally` block is required.
@@ -733,6 +739,10 @@ Tests use JUnit 5 and a JUnit `@TempDir`. Timing-sensitive behaviour must be dri
 | **IT-19** | **Producer write is never blocked.** A simulated producer holds a file open and appends every 5 ms for 10 seconds while FastMirror repeatedly copies it. | Every producer write succeeds. No exception in the producer thread. Write latency shows no outliers attributable to FastMirror. |
 | **IT-20** | **Producer rename is never blocked.** The producer creates and immediately renames files, 200 times, while FastMirror copies them. | Every rename succeeds. No sharing violation. |
 | **IT-21** | **Partial publication end to end.** A source whose read fails after N bytes. | The target exists and contains exactly the first N bytes; outcome `PARTIAL`; a later sweep with a healthy source restores the full file. |
+| **IT-18c** | **External process delete.** A separate Windows process (`cmd /c del`) deletes a file FastMirror holds open. | Exit code 0. This removes the doubt that the JDK's own delete might take a code path the producer does not. |
+| **IT-19c** | **External process write.** `cmd /c echo >>` appends to a file FastMirror holds open. | Exit code 0. |
+| **IT-20c** | **External process rename.** `cmd /c ren` renames a file FastMirror holds open. | Exit code 0. |
+| **PR-01** | **Platform record.** An external delete against a memory-mapped file. | No assertion. The result is printed and recorded so C-9 is re-measured on every build instead of assumed. |
 
 ## 13.3 Architecture and rule tests
 
@@ -794,7 +804,7 @@ Double-clicking `FastMirror.exe` starts the agent with no console window. For un
 | R-6 | Clock skew between source and mirror volumes | Very low | Spurious re-copies | Harmless; a re-copy is idempotent. |
 | **R-7** | A `PARTIAL` overwrites a previously complete target and the source is then deleted, leaving only the truncated version | Very low | Loss of the complete copy of one file | Requires a genuine mid-transfer I/O error, which C-2 makes near-impossible. Accepted deliberately: the alternative (discarding) loses the data in every case rather than one rare case. `PUBLISH_PARTIAL=false` reverts to the stricter behaviour. Counted and logged at `WARN`. |
 | **R-8** | The watch handle prevents another process from renaming or deleting `SOURCE_FOLDER` itself | Low | An administrator cannot rename the folder while the agent runs | Documented (C-11). The producer does not do this. Stop the agent first. |
-| **R-9** | A future JDK changes the Windows NIO share mode and starts blocking the producer | Very low | Prime-directive violation | IT-18, IT-19 and IT-20 run on every build and fail loudly. Do not upgrade the bundled JRE without a green run. |
+| **R-9** | A future JDK or Windows update changes the share mode or delete semantics and starts blocking the producer | Very low | Prime-directive violation | IT-18, IT-19, IT-20 and their external-process variants IT-18c/19c/20c run on every build and fail loudly. Do not upgrade the bundled JRE, or roll out to a materially different Windows build, without a green run. |
 | **R-10** | The producer reuses filenames with different content, so a mirrored file is overwritten before the sync agent has uploaded it | **Unknown — see U-1** | Silent loss of a complete file | FR-31 logs every such replacement so the behaviour is measured on the target PC. If it occurs, the mitigation is versioned mirror filenames (`<name>.<timestamp>.<ext>`), which is a change to §9.5 and to the sync agent's expectations and must be agreed before being built. |
 
 ## 15.1 Open field unknowns
@@ -813,7 +823,7 @@ These are properties of the target environment that are not yet known. Each has 
 
 | Requirement | Design | Test |
 |---|---|---|
-| PD-1, FR-26, NFR-10 | §1.1, §5.1, §9.5, AR-10 | IT-18, IT-19, IT-20, AT-02, AT-03 |
+| PD-1, FR-26, NFR-10 | §1.1, §5.1, §9.5, AR-10 | IT-18, IT-19, IT-20, IT-18c, IT-19c, IT-20c, AT-02, AT-03 |
 | PD-2, FR-27, FR-28 | §1.2, §9.5 | UT-17, UT-18, IT-21 |
 | FR-01, FR-02 | §9.1, §9.3 | IT-01, IT-15 |
 | FR-03, FR-12 | §9.6 | IT-02, UT-12–UT-14 |
@@ -838,7 +848,7 @@ These are properties of the target environment that are not yet known. Each has 
 
 1. All `Must` requirements in §8 implemented.
 2. All unit tests (§13.1), integration tests (§13.2) and architecture tests (§13.3) passing.
-3. **IT-18, IT-19 and IT-20 green.** The prime directive is verified, not assumed. A red run here blocks release regardless of everything else.
+3. **IT-18, IT-19, IT-20 and the external-process variants IT-18c, IT-19c and IT-20c green.** The prime directive is verified, not assumed. A red run here blocks release regardless of everything else.
 4. `Application.java` contains wiring only; a reviewer can confirm no business logic at a glance.
 5. `FastMirror.exe` plus `jre\` and `.env` runs by double-click on a clean Windows 11 machine with no JRE installed and no console window.
 6. A 24-hour soak run against the live Gemcom folder on the target PC, with the `VANISHED`, `PARTIAL` and `FAILED` counts recorded in the project's progress document, and confirmation from the operator that Gemcom logged no new errors during it.
