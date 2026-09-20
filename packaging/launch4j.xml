@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Launch4j configuration for FastMirror (SRS 14.1, 14.2).
+
+  Wraps mirror/build/libs/FastMirror.jar as FastMirror.exe in GUI mode, so the agent runs with no
+  console window (FR-24) and all output goes to the log folder.
+
+  The runtime is the jre\ directory shipped beside the exe. runtimeBits/path are relative to the
+  exe's own directory, so the whole installation folder can be copied to a machine with no Java
+  installed and started by double-clicking (NFR-08).
+
+  Build:
+    1. gradlew.bat fatJar
+    2. launch4jc.exe packaging\launch4j.xml
+    3. copy a Java 21 runtime into the output folder as jre\
+       (jlink --add-modules java.base,java.logging,jdk.unsupported produces a small one;
+        jdk.unsupported is REQUIRED - it exports com.sun.nio.file.ExtendedWatchEventModifier,
+        which is how the recursive FILE_TREE watch is registered (C-5). Without it the agent
+        fails at startup.)
+-->
+<launch4jConfig>
+    <dontWrapJar>false</dontWrapJar>
+    <headerType>gui</headerType>
+    <jar>../mirror/build/libs/FastMirror.jar</jar>
+    <outfile>../build/dist/FastMirror.exe</outfile>
+    <errTitle>FastMirror</errTitle>
+    <cmdLine></cmdLine>
+    <chdir>.</chdir>
+    <priority>normal</priority>
+    <downloadUrl></downloadUrl>
+    <supportUrl></supportUrl>
+    <stayAlive>true</stayAlive>
+    <restartOnCrash>false</restartOnCrash>
+    <manifest></manifest>
+    <icon></icon>
+
+    <jre>
+        <!-- The bundled runtime, relative to the exe. No installed JRE is used or required. -->
+        <path>jre</path>
+        <bundledJre64Bit>true</bundledJre64Bit>
+        <bundledJreAsFallback>false</bundledJreAsFallback>
+        <minVersion>21</minVersion>
+        <maxVersion></maxVersion>
+        <jdkPreference>jdkOnly</jdkPreference>
+        <runtimeBits>64</runtimeBits>
+        <!-- NFR-04: the agent streams through a 64 KB buffer and never loads a file into memory,
+             so a small heap is deliberate and makes a runaway allocation fail loudly. -->
+        <opt>-Xmx256m</opt>
+    </jre>
+
+    <versionInfo>
+        <fileVersion>2.0.0.0</fileVersion>
+        <txtFileVersion>2.0.0</txtFileVersion>
+        <fileDescription>FastMirror - Windows fast folder mirror agent</fileDescription>
+        <copyright>Hands Off Retail</copyright>
+        <productVersion>2.0.0.0</productVersion>
+        <txtProductVersion>2.0.0</txtProductVersion>
+        <productName>FastMirror</productName>
+        <companyName>Hands Off Retail</companyName>
+        <internalName>FastMirror</internalName>
+        <originalFilename>FastMirror.exe</originalFilename>
+    </versionInfo>
+</launch4jConfig>

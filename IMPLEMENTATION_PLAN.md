@@ -2,7 +2,7 @@
 
 **Against:** `SRS_FastMirror.md` v2.0
 **Date:** 2026-09-20
-**Status:** awaiting green flag
+**Status:** implemented; phases 0-11 complete
 **Toolchain on this machine:** Temurin JDK 21.0.10, Gradle 9.7.0 — both verified present
 
 ## Locked decisions
@@ -212,3 +212,36 @@ U-1 is the one with teeth: if names repeat and the sync agent is slower than the
 - I will report real test output, including failures, rather than asserting success.
 - The three items in §17 that require the store PC or the live sync agent will be handed over explicitly as unverified, not quietly marked done.
 - If IT-18 ever fails, I will stop and bring it to you rather than working around it. A workaround there would mean breaking the producer.
+
+
+---
+
+## 7. Outcome
+
+All twelve phases are committed, one commit each. Clean build, no compiler warnings, **163 tests in the default suite and 4 in `slowTest`, all passing**.
+
+### Measured on this machine (Windows 11 build 26200, JDK 21.0.10)
+
+| | |
+|---|---|
+| Capture latency (IT-15, 3,000 files at 50/s) | **mean 4.63 ms, max 19 ms** — NFR-01 budget is 10 ms |
+| Atomic visibility (IT-13, 50 MB) | reader saw only *absent* or *complete*, never a partial size |
+| Overflow (IT-14) | 5,000 files, all mirrored, `FAILED=0` |
+| Soak (IT-16, 30 s) | 1,789 cycles, threads 14 → 14, `FAILED=0` |
+| Producer interference (IT-18/19/20 + external-process variants) | **zero** failed producer operations across 800+ delete, rename and write operations |
+
+### Two things the build found rather than assumed
+
+**The SRS was wrong about memory mapping.** C-9 in v2.0 claimed a mapped section makes the producer's delete fail with `ERROR_USER_MAPPED_FILE`. On this platform it does not — modern Windows deletes by unlinking the name, and both in-process and external deletes succeed against a mapped file. The specification now records what was measured. NI-4 still forbids mapping, on the surviving rationale that the behaviour is version-dependent, is documented to fail elsewhere, and buys nothing.
+
+**A transient publish failure exists.** One `FAILED` appeared once in ~1,800 soak cycles and did not reproduce. Windows can briefly refuse a rename while a scanner holds the target open, so the publish step now retries three times with a short backoff. Retrying is safe there in a way that retrying a source open is not: the target is inside the mirror folder, which is ours.
+
+The rule tests were also verified to be capable of failing: a class deliberately violating NI-1, NI-3 and NI-4 was compiled in, three architecture tests went red, and they were green again once it was removed.
+
+### Handed over unverified
+
+These need the store PC and cannot be completed here:
+
+1. **IT-17** — interoperation with the live HOR AWS Sync Agent.
+2. **The 24-hour soak** against the real Gemcom folder (`gradlew slowTest -Dfastmirror.soak.seconds=86400`), with the `VANISHED`, `PARTIAL` and `FAILED` counts recorded.
+3. **Clean-machine launch** — `FastMirror.exe` plus `jre\` on a Windows 11 box with no JRE. The jar was verified to run standalone from a deployment folder; producing the `.exe` needs Launch4j, which is not installed here.
