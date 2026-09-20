@@ -31,12 +31,19 @@ public final class AgentHarness implements AutoCloseable {
 
     private final Path sourceRoot;
     private final Path mirrorRoot;
+    private final Path logFolder;
     private final AppLogger logger;
     private final Application.Handle handle;
 
-    private AgentHarness(Path sourceRoot, Path mirrorRoot, AppLogger logger, Application.Handle handle) {
+    private AgentHarness(
+            Path sourceRoot,
+            Path mirrorRoot,
+            Path logFolder,
+            AppLogger logger,
+            Application.Handle handle) {
         this.sourceRoot = sourceRoot;
         this.mirrorRoot = mirrorRoot;
+        this.logFolder = logFolder;
         this.logger = logger;
         this.handle = handle;
     }
@@ -56,11 +63,36 @@ public final class AgentHarness implements AutoCloseable {
         final MirrorConfig config = MirrorConfig.load(values::get, logFolder);
         final AppLogger logger = new AppLogger(logFolder, clock);
         final Application.Handle handle = Application.start(config, logger, clock);
-        return new AgentHarness(sourceRoot, mirrorRoot, logger, handle);
+        return new AgentHarness(sourceRoot, mirrorRoot, logFolder, logger, handle);
     }
 
     public Path sourceRoot() {
         return sourceRoot;
+    }
+
+    /**
+     * WARN and ERROR lines from the agent's own log.
+     *
+     * <p>When a scenario test fails on a counter, the counter alone does not say why. This makes
+     * the agent's own account of the failure part of the test output.
+     */
+    public List<String> problemLines() {
+        try (var stream = Files.list(logFolder)) {
+            final List<Path> logs =
+                    stream.filter(path -> path.getFileName().toString().endsWith(".log")).toList();
+            final List<String> lines = new java.util.ArrayList<>();
+            for (final Path log : logs) {
+                for (final String line : Files.readAllLines(log, StandardCharsets.UTF_8)) {
+                    if (line.contains("[WARN]") || line.contains("[ERROR]") || line.startsWith("	")
+                            || line.startsWith("java.") || line.startsWith("Caused by")) {
+                        lines.add(line);
+                    }
+                }
+            }
+            return lines;
+        } catch (final IOException e) {
+            return List.of("could not read the agent log: " + e);
+        }
     }
 
     public Path mirrorRoot() {

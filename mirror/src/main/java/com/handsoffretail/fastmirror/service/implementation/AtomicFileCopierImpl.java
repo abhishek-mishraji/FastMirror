@@ -44,10 +44,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *       producer's write and delete keep succeeding while we read, and the reason an open handle
  *       keeps serving data after a delete (C-2).
  *   <li><strong>The transfer is an explicit bounded-buffer loop</strong> (NI-4). {@code transferTo}
- *       and {@code map} are forbidden: on Windows the JDK implements them by memory-mapping the
- *       source, and a file with a mapped section <em>cannot be deleted</em> — the producer's
- *       {@code DeleteFile} would fail with {@code ERROR_USER_MAPPED_FILE}. {@code Files.copy} is
- *       forbidden for a related reason (C-10): its share mode is not ours to choose.
+ *       and {@code map} are forbidden: on Windows the JDK implements {@code transferTo} by
+ *       memory-mapping the source, and a mapped section is a documented hazard to another process's
+ *       delete ({@code ERROR_USER_MAPPED_FILE}). It was measured <em>not</em> to block a delete on
+ *       the current platform (C-9), but the behaviour is Windows-version dependent and an explicit
+ *       loop costs nothing, so the risk is simply not taken. {@code Files.copy} is forbidden for a
+ *       related reason (C-10): its share mode is not ours to choose.
  *   <li><strong>The handle is held for as little time as possible and always closed</strong>
  *       (NI-9). Nothing slow happens between open and close — logging is asynchronous precisely so
  *       that it cannot extend this window.
@@ -67,6 +69,14 @@ public final class AtomicFileCopierImpl implements FileCopier {
 
     /** An upper bound on the doubling backoff, so a pathological config cannot stall a worker. */
     private static final long MAX_RETRY_DELAY_MS = 1_000L;
+
+    /**
+     * Retries for the publish step only. Unlike the source open, the target lives in the mirror
+     * folder, which belongs to FastMirror, so retrying here puts no pressure on the producer.
+     */
+    private static final int PUBLISH_RETRY_ATTEMPTS = 3;
+
+    private static final long PUBLISH_RETRY_DELAY_MS = 10L;
 
     private final MirrorConfig config;
     private final PathMapper mapper;
@@ -246,7 +256,7 @@ public final class AtomicFileCopierImpl implements FileCopier {
             Path staging,
             long latencyMs,
             boolean followedCreateEvent)
-            throws IOException {
+            throws IOException, InterruptedException {
 
         final FileTime sourceMtime = readMtime(source);
 
@@ -345,12 +355,28 @@ public final class AtomicFileCopierImpl implements FileCopier {
      * directory-entry swap. A consumer — the HOR AWS Sync Agent, in production — therefore never
      * observes a target that FastMirror is part-way through writing.
      */
-    private void publish(Path staging, Path target) throws IOException {
-        try {
-            Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (final AtomicMoveNotSupportedException e) {
-            Files.move(staging, target, StandardCopyOption.REPLACE_EXISTING);
+    private void publish(Path staging, Path target) throws IOException, InterruptedException {
+        IOException lastFailure = null;
+        for (int attempt = 0; attempt <= PUBLISH_RETRY_ATTEMPTS; attempt++) {
+            try {
+                Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            } catch (final AtomicMoveNotSupportedException e) {
+                Files.move(staging, target, StandardCopyOption.REPLACE_EXISTING);
+                return;
+            } catch (final IOException e) {
+                // Observed once in a long soak: Windows can transiently refuse a rename when an
+                // antivirus scanner or indexer has the target open for a moment. Retrying is safe
+                // here in a way that retrying a source open is not - the target is inside the
+                // mirror folder, which belongs to FastMirror, so no retry pressure reaches the
+                // producer (NI-11 constrains the source side only).
+                lastFailure = e;
+                if (attempt < PUBLISH_RETRY_ATTEMPTS) {
+                    sleeper.sleep(PUBLISH_RETRY_DELAY_MS);
+                }
+            }
         }
+        throw lastFailure;
     }
 
     /**
