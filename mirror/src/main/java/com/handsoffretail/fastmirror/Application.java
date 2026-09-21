@@ -13,6 +13,7 @@ import com.handsoffretail.fastmirror.service.PathMapper;
 import com.handsoffretail.fastmirror.service.SourceWatcherService;
 import com.handsoffretail.fastmirror.service.StatsReporter;
 import com.handsoffretail.fastmirror.service.SweepService;
+import com.handsoffretail.fastmirror.service.TrayService;
 import com.handsoffretail.fastmirror.service.implementation.AtomicFileCopierImpl;
 import com.handsoffretail.fastmirror.service.implementation.CopyQueueImpl;
 import com.handsoffretail.fastmirror.service.implementation.GlobPathFilterImpl;
@@ -20,6 +21,7 @@ import com.handsoffretail.fastmirror.service.implementation.LoggingStatsReporter
 import com.handsoffretail.fastmirror.service.implementation.MirrorServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.RelativePathMapperImpl;
 import com.handsoffretail.fastmirror.service.implementation.SizeAndTimeDifferenceDetectorImpl;
+import com.handsoffretail.fastmirror.service.implementation.SystemTrayServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.ThreadSleeperImpl;
 import com.handsoffretail.fastmirror.service.implementation.TreeSweepServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.WatchServiceSourceWatcherImpl;
@@ -90,7 +92,30 @@ public final class Application {
 
         final Handle handle = start(config, logger, clock);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(handle::stop, "fastmirror-shutdown"));
+        // 11. The tray icon: a startup notification saying where files are copied from and to, a
+        //     visible sign the agent is running, and an Exit button (SRS 9.11). Wired here in main
+        //     rather than in start(), so tests and headless runs never create one. Exit stops the
+        //     agent and ends the process; the shutdown hook below then removes the icon.
+        final TrayService tray =
+                new SystemTrayServiceImpl(
+                        config,
+                        handle.stats(),
+                        logger,
+                        () -> {
+                            handle.stop();
+                            System.exit(0);
+                        });
+
+        Runtime.getRuntime()
+                .addShutdownHook(
+                        new Thread(
+                                () -> {
+                                    handle.stop();
+                                    tray.close();
+                                },
+                                "fastmirror-shutdown"));
+
+        tray.show();
 
         handle.awaitStop();
     }
@@ -214,16 +239,19 @@ public final class Application {
             }
         }
 
-        /** Blocks until the agent stops. Used by {@code main} to keep the process alive. */
+        /**
+         * Blocks until the agent stops, then ends the process.
+         *
+         * <p>The exit is unconditional. The tray icon starts AWT threads that are not daemons, so
+         * without it a stopped agent would leave the process alive with nothing running.
+         */
         public void awaitStop() {
             try {
                 stopped.await();
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            if (exitCode != 0) {
-                System.exit(exitCode);
-            }
+            System.exit(exitCode);
         }
 
         /** The queue, so integration tests can wait for quiescence rather than for a clock. */

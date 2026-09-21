@@ -68,6 +68,21 @@ C:\HOR\FastMirror\
 
 Copy the folder to the machine, edit `.env`, and double-click `FastMirror.exe`. No Java installation is needed.
 
+### The tray icon
+
+When it starts, FastMirror puts a green icon in the notification area (bottom-right of the taskbar; it may be under the **^** overflow arrow) and shows a notification:
+
+> **FastMirror is running**
+> Copying files from `C:\Gemcom\bin\out` to `C:\temp`
+
+- **Hover** over the icon: running state, both folders, files copied so far.
+- **Right-click**: the same details, and **Exit FastMirror**.
+- **Double-click**: shows the notification again.
+
+Exit asks for confirmation first, because anything Gemcom produces while FastMirror is stopped is lost. After you confirm, it lets in-flight copies finish, then closes.
+
+Run as a Windows service there is no desktop, so there is no icon — the agent works exactly the same and notes it in the log.
+
 For unattended operation, register it as a Windows service or a Task Scheduler task set to run at startup, restart on failure, and run whether or not a user is logged on.
 
 ### Configuration
@@ -140,19 +155,20 @@ Three commands, from the project root in `cmd`. Requires [Launch4j](https://laun
 ```bat
 gradlew.bat fatJar
 
-jlink --add-modules java.base,jdk.unsupported --strip-debug --no-header-files --no-man-pages --compress=zip-6 --output build\dist\jre
+jlink --add-modules java.base,java.desktop,jdk.unsupported --strip-debug --no-header-files --no-man-pages --compress=zip-6 --output build\dist\jre
 
 "C:\Program Files (x86)\Launch4j\launch4jc.exe" packaging\launch4j.xml
 ```
 
-That leaves `build\dist\FastMirror.exe` and `build\dist\jre\` (about 30 MB). Copy both, plus a `.env` built from `packaging\env.template`, to the target machine.
+That leaves `build\dist\FastMirror.exe` and `build\dist\jre\` (about 46 MB). Copy both, plus a `.env` built from `packaging\env.template`, to the target machine.
 
 `jlink` refuses to write into an existing directory, so delete `build\dist\jre` before re-running it.
 
 Two things about that module list, both verified rather than assumed:
 
-- It is exactly what the agent needs — `jdeps --print-module-deps --ignore-missing-deps mirroruild\libs\FastMirror.jar` reports `java.base,jdk.unsupported` and nothing else.
+- It is exactly what the agent needs — `jdeps --print-module-deps --ignore-missing-deps mirror\build\libs\FastMirror.jar` reports `java.base,java.desktop,jdk.unsupported` and nothing else.
 - **`jdk.unsupported` is mandatory.** It exports the API used to register the recursive directory watch. Drop it and the agent fails at startup.
+- **`java.desktop` is mandatory** for the tray icon.
 
 The Launch4j config deliberately sets no `minVersion`. Setting one turns the bundled runtime into a mere preference and lets the exe fall back to whatever Java is installed — which was observed here: with `jre\` renamed away, the exe happily started on an installed JDK. On a store PC that would mean a mis-copied `jre\` folder silently running the agent on the wrong Java. With no version range the bundled runtime is required, and its absence is an immediate error instead of a subtle one.
 

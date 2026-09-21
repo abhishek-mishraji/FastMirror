@@ -364,6 +364,10 @@ Each rule below must fail fast with a clear, actionable message and exit code `1
 | **FR-28** | **When a transfer fails with zero bytes read, nothing shall be published; the outcome shall be `FAILED`, or `VANISHED` if the cause was the file's disappearance before the open.** | **Must** |
 | **FR-29** | **No exception arising from a source file shall escape a copy job. Every copy job shall terminate in exactly one `CopyOutcome`.** | **Must** |
 | **FR-30** | **The agent shall hold no more than `COPY_WORKERS` source handles concurrently and shall close each in a `finally` block or try-with-resources.** | **Must** |
+| **FR-32** | **When started from the desktop, the agent shall show a system-tray icon and a Windows notification stating that it is running and naming the source and mirror folders (§9.11).** | **Should** |
+| **FR-33** | **The tray icon's hover text and right-click menu shall show that the agent is running, the two folders, and the number of files copied since start, refreshed at least every 5 seconds.** | **Should** |
+| **FR-34** | **The tray menu shall offer Exit, which asks for confirmation and then stops the agent through the normal shutdown sequence (§9.10) before ending the process.** | **Should** |
+| **FR-35** | **Where no system tray is available — for example when running as a Windows service — the agent shall run normally without one and log that fact. The tray must never be a reason the agent fails to start.** | **Must** |
 | **FR-31** | **When a path is created again after having been deleted, and the mirror still holds the earlier version, the agent shall log one `WARN` line naming that path. This measures filename reuse (U-1, R-10) and is not an error. A bare `ENTRY_CREATE` is explicitly *not* sufficient: Windows reports an ordinary new file as CREATE followed by MODIFY, and treating that as reuse produced false alarms on a running agent. Since operators are asked to act on these lines, a false alarm is worse than no detection.** | **Should** |
 
 ---
@@ -623,6 +627,25 @@ Source handles are closed as part of normal job completion; the 5-second grace e
 
 ---
 
+## 9.11 System tray
+
+When started from the desktop, the agent shows a notification-area icon (a green disc with a white arrow):
+
+| Where | What it shows |
+|---|---|
+| Notification at startup | **FastMirror is running** — Copying files from `<source>` to `<mirror>` |
+| Hover | `FastMirror: running`, both folders, files copied so far |
+| Right-click menu | `Running - N files copied` (plus `N failed (see log)` if any), `From:`, `To:`, **Exit FastMirror** |
+| Double-click | Shows the startup notification again — a quick "is it still running?" check |
+
+**Exit asks for confirmation.** Stopping the agent means Gemcom's files stop being captured, and since they live about a second, anything produced while it is stopped is lost for good. A stray click must not be able to do that. Once confirmed, Exit runs the normal shutdown sequence (§9.10) on its own thread — so in-flight copies finish — then ends the process and removes the icon.
+
+The tray is a window onto the agent and nothing more: it never touches a source or mirror file, reads the counters without locking, and runs on its own threads, so it cannot slow the copy path. It is created only in `main`, never in `Application.start`, so tests and headless runs never create one. As a Windows service there is no desktop and therefore no tray; that is expected (FR-35).
+
+Using the tray requires the `java.desktop` module in the bundled runtime (§14.1).
+
+---
+
 # 10. Non-functional requirements
 
 | ID | Requirement |
@@ -770,6 +793,8 @@ include("mirror")
 ```
 
 `mirror/build.gradle.kts` applies the `application` plugin, sets the Java 21 toolchain, declares **no** runtime dependencies, sets `mainClass` to `com.handsoffretail.fastmirror.Application`, and registers a `fatJar` task. A Launch4j configuration wraps the fat jar as `FastMirror.exe` in GUI mode (no console window, FR-24), configured to use the `jre\` directory beside the exe as its runtime.
+
+The bundled runtime is produced with `jlink` and must contain exactly the modules `jdeps` reports for the jar: **`java.base,java.desktop,jdk.unsupported`**. `jdk.unsupported` provides the recursive directory watch (C-5) and `java.desktop` the system tray (§9.11); without either, the agent fails at startup.
 
 ## 14.2 Installation on the store PC
 
