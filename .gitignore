@@ -21,3 +21,6 @@ logs/
 # OS
 Thumbs.db
 desktop.ini
+
+# Copy ledger
+state/

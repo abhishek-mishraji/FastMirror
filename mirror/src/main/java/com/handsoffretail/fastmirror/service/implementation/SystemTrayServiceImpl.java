@@ -40,9 +40,9 @@ import javax.swing.JOptionPane;
  *   <li>Double-click shows the notification again, as a quick "is it still running?" check.
  * </ul>
  *
- * <p>Exit asks for confirmation. Stopping the agent means Gemcom's files stop being captured, and
- * because they live about a second, anything produced while it is stopped is lost for good (SRS 1).
- * A stray click in the notification area should not be able to do that.
+ * <p>Exit asks for confirmation. Stopping the agent means new Archive files stop reaching the
+ * mirror, and therefore S3, until it is started again. A stray click in the notification area
+ * should not be able to do that.
  *
  * <p>Nothing here can slow the copy path. The tray has its own refresh thread and the AWT event
  * thread, reads the counters without locking (they are {@code LongAdder}s), and never touches a
@@ -218,9 +218,10 @@ public final class SystemTrayServiceImpl implements TrayService {
                     JOptionPane.showConfirmDialog(
                             owner,
                             "Stop " + PRODUCT + "?\n\n"
-                                    + "Files created in\n    " + config.sourceFolder() + "\n"
-                                    + "will no longer be copied to\n    " + config.mirrorFolder() + "\n"
-                                    + "until " + PRODUCT + " is started again.",
+                                    + "New files in\n    " + config.sourceFolder() + "\n"
+                                    + "will not be copied to\n    " + config.mirrorFolder() + "\n"
+                                    + "until " + PRODUCT + " is started again. Nothing is lost:\n"
+                                    + "they are copied then.",
                             PRODUCT,
                             JOptionPane.YES_NO_OPTION,
                             JOptionPane.WARNING_MESSAGE);
@@ -269,11 +270,9 @@ public final class SystemTrayServiceImpl implements TrayService {
         return tooltip(config, snapshot);
     }
 
-    /** Everything that put bytes in the mirror, partial captures included. */
+    /** Everything that put a complete file in the mirror. */
     private static long copied(CopyStats snapshot) {
-        return snapshot.count(CopyOutcome.COPIED)
-                + snapshot.count(CopyOutcome.REPLACED)
-                + snapshot.count(CopyOutcome.PARTIAL);
+        return snapshot.count(CopyOutcome.COPIED) + snapshot.count(CopyOutcome.REPLACED);
     }
 
     /** A green disc with a white arrow: "copying". Drawn in code, so there is no icon file to ship. */

@@ -4,22 +4,25 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.handsoffretail.fastmirror.entity.CopyOutcome;
-import com.handsoffretail.fastmirror.entity.CopyStats;
 import com.handsoffretail.fastmirror.support.AgentHarness;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * IT-13 to IT-16 — the heavy scenarios.
+ * The heavy scenarios.
  *
  * <p>Tagged {@code slow} and excluded from the default test run. Execute with
  * {@code gradlew slowTest}.
@@ -29,8 +32,10 @@ class SlowScenarioTest {
 
     @TempDir Path sourceRoot;
     @TempDir Path mirrorRoot;
-    @TempDir Path logFolder;
+    @TempDir Path baseDirectory;
     @TempDir Path staging;
+
+    private static final LocalDateTime CREATED = LocalDateTime.of(2026, 10, 15, 10, 0);
 
     @Test
     @DisplayName("IT-13: a reader polling the target never observes a partially written file")
@@ -41,14 +46,16 @@ class SlowScenarioTest {
             content[i] = (byte) (i % 251);
         }
 
-        // Build the file outside the watched tree, then move it in atomically, so the agent sees a
-        // complete file. Otherwise the intermediate copies FR-05 permits would be indistinguishable
-        // from the non-atomic publishing this test is looking for.
-        final Path prepared = staging.resolve("big.bin");
+        final Path prepared = staging.resolve("CPJbig.xml");
         Files.write(prepared, content);
 
-        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
-            final Path target = agent.target("big.bin");
+        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory)) {
+            Files.move(prepared, sourceRoot.resolve("CPJbig.xml"), StandardCopyOption.ATOMIC_MOVE);
+            AgentHarness.setCreated(sourceRoot.resolve("CPJbig.xml"), CREATED);
+            agent.scanNow();
+            agent.advancePastStability();
+
+            final Path target = agent.target("CPJ/2026/october/2026-10-15/CPJbig.xml");
             final Set<Long> observedSizes = new ConcurrentSkipListSet<>();
             final AtomicBoolean polling = new AtomicBoolean(true);
 
@@ -73,8 +80,8 @@ class SlowScenarioTest {
             reader.setDaemon(true);
             reader.start();
 
-            Files.move(prepared, sourceRoot.resolve("big.bin"), StandardCopyOption.ATOMIC_MOVE);
-            agent.awaitMirrored("big.bin", content);
+            agent.scanNow();
+            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJbig.xml", content);
 
             polling.set(false);
             reader.join(5_000L);
@@ -82,91 +89,54 @@ class SlowScenarioTest {
             assertEquals(
                     Set.of(0L, (long) size),
                     observedSizes,
-                    "FR-08: a consumer may only ever see the file absent or complete, saw: "
-                            + observedSizes);
+                    "a consumer may only ever see the file absent or complete, saw: " + observedSizes);
         }
     }
 
     @Test
-    @DisplayName("IT-14: 5,000 files created as fast as possible all reach the mirror")
-    void it14_overflow() throws Exception {
+    @DisplayName("IT-14: a backlog of 5,000 files is copied once, and not again after a restart")
+    void it14_largeBacklog() throws Exception {
         final int fileCount = 5_000;
+        for (int i = 0; i < fileCount; i++) {
+            final Path file = sourceRoot.resolve("CPJ" + i + ".xml");
+            Files.writeString(file, "row " + i, StandardCharsets.UTF_8);
+            AgentHarness.setCreated(file, CREATED.plusMinutes(i % 1440));
+        }
 
-        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
-            for (int i = 0; i < fileCount; i++) {
-                Files.writeString(sourceRoot.resolve("burst-" + i + ".xml"), "row " + i);
-            }
-
-            // Whatever the watcher dropped, the sweep is the safety net (FR-15).
+        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory)) {
+            agent.advancePastStability();
+            agent.scanNow();
             AgentHarness.await(
                     () -> countMirrored() == fileCount,
                     "all " + fileCount + " files to reach the mirror",
-                    java.time.Duration.ofMinutes(3));
+                    Duration.ofMinutes(3));
+            agent.awaitIdle();
 
-            assertEquals(fileCount, countMirrored());
+            assertEquals(fileCount, agent.count(CopyOutcome.COPIED));
             assertEquals(0L, agent.count(CopyOutcome.FAILED));
+            assertEquals(fileCount, Files.readAllLines(agent.ledgerFile()).size());
+        }
+
+        try (AgentHarness restarted = AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory)) {
+            restarted.copyStableFiles();
+
+            assertEquals(0L, restarted.count(CopyOutcome.COPIED) + restarted.count(CopyOutcome.REPLACED));
         }
     }
 
     @Test
-    @DisplayName("IT-15: 50 files per second for 60 seconds, all mirrored within the latency budget")
-    void it15_burstThroughput() throws Exception {
-        final int perSecond = 50;
-        final int seconds = 60;
-        final int total = perSecond * seconds;
-
-        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
-            final long start = System.nanoTime();
-            for (int second = 0; second < seconds; second++) {
-                for (int i = 0; i < perSecond; i++) {
-                    Files.writeString(
-                            sourceRoot.resolve("rate-" + second + "-" + i + ".xml"), "payload");
-                }
-                final long targetNanos = start + (second + 1) * 1_000_000_000L;
-                final long sleepMs = (targetNanos - System.nanoTime()) / 1_000_000L;
-                if (sleepMs > 0) {
-                    Thread.sleep(sleepMs);
-                }
-            }
-
-            AgentHarness.await(
-                    () -> countMirrored() == total,
-                    "all " + total + " files to reach the mirror",
-                    java.time.Duration.ofMinutes(3));
-
-            final CopyStats stats = agent.stats();
-            System.out.println(
-                    "IT-15: " + total + " files, capture latency avg="
-                            + String.format(java.util.Locale.ROOT, "%.2f", stats.averageLatencyMs())
-                            + "ms max=" + stats.maxLatencyMs() + "ms over "
-                            + stats.observations() + " opens");
-
-            assertEquals(total, countMirrored());
-            assertEquals(0L, agent.count(CopyOutcome.FAILED));
-            // NFR-01 states a median. The reporter tracks mean and max, and a mean under the
-            // budget is the stricter claim when outliers exist, so it is what is asserted here.
-            assertTrue(
-                    stats.averageLatencyMs() < 10.0,
-                    "NFR-01: mean capture latency was " + stats.averageLatencyMs() + "ms");
-        }
-    }
-
-    @Test
-    @DisplayName("IT-16: a sustained run leaves thread and handle counts stable")
+    @DisplayName("IT-16: a sustained run leaves the thread count stable")
     void it16_longRun() throws Exception {
-        // Parameterised so the same test covers the local run and the 24-hour soak on the store PC:
-        //   gradlew slowTest -Dfastmirror.soak.seconds=86400
+        // Parameterised so the same test covers the local run and a longer soak:
+        //   gradlew slowTest -Dfastmirror.soak.seconds=3600
         final int seconds = Integer.getInteger("fastmirror.soak.seconds", 30);
 
-        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
-            // Warm up before taking the baseline. Executors.newFixedThreadPool creates its worker
-            // threads lazily, so a baseline taken at startup would count zero copy workers and then
-            // "grow" by COPY_WORKERS on first load - bounded pool growth, not a leak. The question
-            // NFR-05 actually asks is whether the count is stable once the pool is populated.
+        try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory)) {
+            // Warm up first: the worker pool creates its threads lazily.
             for (int i = 0; i < 20; i++) {
-                Files.writeString(sourceRoot.resolve("warmup-" + i + ".xml"), "warmup");
+                agent.write("CPJwarm" + i + ".xml", "warmup", CREATED);
             }
-            agent.awaitIdle();
+            agent.copyStableFiles();
             Thread.sleep(200L);
 
             final int threadsAtStart = Thread.activeCount();
@@ -174,42 +144,36 @@ class SlowScenarioTest {
             int cycle = 0;
 
             while (System.nanoTime() < deadline) {
-                final Path file = sourceRoot.resolve("soak-" + (cycle % 50) + ".xml");
-                Files.writeString(file, "cycle " + cycle);
-                if (cycle % 3 == 0) {
-                    Files.deleteIfExists(file);
+                agent.write("CPJsoak" + cycle + ".xml", "cycle " + cycle, CREATED);
+                if (cycle % 10 == 0) {
+                    agent.copyStableFiles();
                 }
                 cycle++;
                 Thread.sleep(10L);
             }
-
-            agent.awaitIdle();
+            agent.copyStableFiles();
             final int threadsAtEnd = Thread.activeCount();
 
             System.out.println(
                     "IT-16 soak over " + seconds + "s: cycles=" + cycle
                             + " threads " + threadsAtStart + " -> " + threadsAtEnd
                             + " COPIED=" + agent.count(CopyOutcome.COPIED)
-                            + " REPLACED=" + agent.count(CopyOutcome.REPLACED)
-                            + " VANISHED=" + agent.count(CopyOutcome.VANISHED)
-                            + " PARTIAL=" + agent.count(CopyOutcome.PARTIAL)
                             + " LOCKED=" + agent.count(CopyOutcome.LOCKED)
                             + " FAILED=" + agent.count(CopyOutcome.FAILED));
 
             assertEquals(
                     0L,
                     agent.count(CopyOutcome.FAILED),
-                    "a FAILED means bytes were lost for a reason other than the race. Agent log: "
-                            + String.join(" | ", agent.problemLines()));
+                    "Agent log: " + String.join(" | ", agent.problemLines()));
+            assertEquals(cycle + 20L, agent.count(CopyOutcome.COPIED));
             assertTrue(
                     threadsAtEnd <= threadsAtStart + 2,
-                    "NFR-05: thread count should be stable, went from "
-                            + threadsAtStart + " to " + threadsAtEnd);
+                    "thread count should be stable, went from " + threadsAtStart + " to " + threadsAtEnd);
         }
     }
 
     private long countMirrored() {
-        try (var stream = Files.list(mirrorRoot)) {
+        try (Stream<Path> stream = Files.walk(mirrorRoot)) {
             return stream.filter(path -> path.getFileName().toString().endsWith(".xml")).count();
         } catch (final IOException e) {
             return -1L;

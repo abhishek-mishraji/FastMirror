@@ -8,7 +8,7 @@ package com.handsoffretail.fastmirror.logging;
  */
 public enum LogLevel {
 
-    /** Normal progress: startup, each successful copy, sweep summaries, the periodic stats line. */
+    /** Normal progress: startup, each successful copy, scan summaries, the periodic stats line. */
     INFO,
 
     /**

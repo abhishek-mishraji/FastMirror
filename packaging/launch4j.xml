@@ -13,12 +13,10 @@
     1. gradlew.bat fatJar
     2. launch4jc.exe packaging\launch4j.xml
     3. build the bundled runtime into the output folder as jre\ using jlink, with the module
-       set "java.base,java.desktop,jdk.unsupported" (confirmed by jdeps against the built jar).
+       set "java.base,java.desktop" (confirmed by jdeps against the built jar).
 
-       jdk.unsupported is REQUIRED. It exports com.sun.nio.file.ExtendedWatchEventModifier,
-       which is how the recursive FILE_TREE watch is registered (C-5).
-       java.desktop is REQUIRED for the system-tray icon (SRS 9.11).
-       Without either module the agent fails at startup.
+       java.desktop is REQUIRED for the system-tray icon. Without it the agent fails at startup.
+       (v2 also needed jdk.unsupported for its recursive file watch; v3 has no watcher.)
 -->
 <launch4jConfig>
     <dontWrapJar>false</dontWrapJar>

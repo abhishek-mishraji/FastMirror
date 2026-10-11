@@ -1,25 +1,35 @@
 package com.handsoffretail.fastmirror.service;
 
+import com.handsoffretail.fastmirror.entity.Selection;
 import java.nio.file.Path;
+import java.time.LocalDate;
 
 /**
- * Translates between source paths, mirror paths and the relative path that identifies a file in
- * both trees (SRS 6.2, FR-06).
+ * Translates between source paths, relative paths and the grouped destination layout.
  *
- * <p>A pure function of its two configured roots. Performs no I/O whatsoever, which is what makes
- * it safe to call on the latency-critical event thread (SRS 9.3).
+ * <p>A pure function of its two configured roots. Performs no I/O whatsoever.
  */
 public interface PathMapper {
 
     /**
      * The path of {@code sourceFile} relative to the source root.
      *
-     * @throws IllegalArgumentException if {@code sourceFile} lies outside the source root (UT-02)
+     * @throws IllegalArgumentException if {@code sourceFile} lies outside the source root
      */
     Path relativize(Path sourceFile);
 
     /**
-     * The mirror path for a relative path.
+     * The destination of a selected file, relative to the mirror root:
+     * {@code <folder>/<yyyy>/<month>/<yyyy-MM-dd>/<name>} when grouped by date, or
+     * {@code <folder>/<yyyy>/<month>/<name>} when grouped by month. The month is the lower-case
+     * English name, such as {@code october}.
+     *
+     * @throws IllegalArgumentException if the result would escape the mirror root
+     */
+    Path targetFor(Selection selection, Path relativeSource, LocalDate creationDate);
+
+    /**
+     * The mirror path for a relative target path.
      *
      * @throws IllegalArgumentException if {@code relative} is absolute or escapes the mirror root
      */

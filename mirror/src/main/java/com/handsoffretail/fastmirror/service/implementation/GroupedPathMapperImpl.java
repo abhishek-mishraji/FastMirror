@@ -1,23 +1,27 @@
 package com.handsoffretail.fastmirror.service.implementation;
 
+import com.handsoffretail.fastmirror.entity.GroupBy;
+import com.handsoffretail.fastmirror.entity.Selection;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.format.TextStyle;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Maps between the two trees by relative path, preserving directory structure exactly (FR-06).
+ * Maps a selected source file to {@code <folder>/<yyyy>/<month>/[<yyyy-MM-dd>/]<name>}.
  *
- * <p>Both roots are normalized at construction. Every mapping is checked for containment, so a
- * traversal sequence in a relative path can never produce a target outside the mirror root. That
- * check is not defensive decoration: a path that escaped the mirror root would be a write outside
- * the one directory FastMirror is allowed to write to.
+ * <p>Every mapping is checked for containment, so nothing in a file or folder name can produce a
+ * target outside the mirror root. That check is not decoration: a path that escaped the mirror
+ * root would be a write outside the one directory FastMirror is allowed to write to.
  */
-public final class RelativePathMapperImpl implements PathMapper {
+public final class GroupedPathMapperImpl implements PathMapper {
 
     private final Path sourceRoot;
     private final Path mirrorRoot;
 
-    public RelativePathMapperImpl(Path sourceRoot, Path mirrorRoot) {
+    public GroupedPathMapperImpl(Path sourceRoot, Path mirrorRoot) {
         this.sourceRoot = Objects.requireNonNull(sourceRoot, "sourceRoot").toAbsolutePath().normalize();
         this.mirrorRoot = Objects.requireNonNull(mirrorRoot, "mirrorRoot").toAbsolutePath().normalize();
     }
@@ -34,6 +38,27 @@ public final class RelativePathMapperImpl implements PathMapper {
             throw new IllegalArgumentException("Path is the source root itself: " + absolute);
         }
         return sourceRoot.relativize(absolute);
+    }
+
+    @Override
+    public Path targetFor(Selection selection, Path relativeSource, LocalDate creationDate) {
+        Objects.requireNonNull(selection, "selection");
+        Objects.requireNonNull(relativeSource, "relativeSource");
+        Objects.requireNonNull(creationDate, "creationDate");
+
+        Path target =
+                Path.of(
+                        selection.destinationFolder(),
+                        String.valueOf(creationDate.getYear()),
+                        monthName(creationDate));
+        if (selection.groupBy() == GroupBy.DATE) {
+            target = target.resolve(creationDate.toString()); // ISO yyyy-MM-dd
+        }
+        target = target.resolve(relativeSource.getFileName().toString());
+
+        // Validates containment; the relative form is what the job carries.
+        toTarget(target);
+        return target;
     }
 
     @Override
@@ -54,6 +79,11 @@ public final class RelativePathMapperImpl implements PathMapper {
     @Override
     public Path mirrorRoot() {
         return mirrorRoot;
+    }
+
+    /** {@code january} ... {@code december}, independent of the PC's language settings. */
+    static String monthName(LocalDate date) {
+        return date.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH).toLowerCase(Locale.ROOT);
     }
 
     private static Path resolveWithin(Path root, Path relative, String rootName) {

@@ -6,29 +6,19 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * An immutable snapshot of the copy counters at one instant (SRS 9.8, FR-21).
+ * An immutable snapshot of the copy counters at one instant.
  *
- * <p>Holds data only. Rendering the summary line is the reporter's job (SRS 6.2).
+ * <p>Holds data only. Rendering the summary line is the reporter's job.
  */
 public final class CopyStats {
 
     private final Map<CopyOutcome, Long> counts;
-    private final long observations;
-    private final double averageLatencyMs;
-    private final long maxLatencyMs;
 
-    public CopyStats(
-            Map<CopyOutcome, Long> counts,
-            long observations,
-            double averageLatencyMs,
-            long maxLatencyMs) {
+    public CopyStats(Map<CopyOutcome, Long> counts) {
         Objects.requireNonNull(counts, "counts");
         final Map<CopyOutcome, Long> copy = new EnumMap<>(CopyOutcome.class);
         copy.putAll(counts);
         this.counts = Collections.unmodifiableMap(copy);
-        this.observations = observations;
-        this.averageLatencyMs = averageLatencyMs;
-        this.maxLatencyMs = maxLatencyMs;
     }
 
     /** The count for one outcome, zero if it never occurred. */
@@ -46,19 +36,6 @@ public final class CopyStats {
                     }
                 });
         return Collections.unmodifiableMap(nonZero);
-    }
-
-    /** How many capture-latency measurements contributed to the averages. */
-    public long observations() {
-        return observations;
-    }
-
-    public double averageLatencyMs() {
-        return averageLatencyMs;
-    }
-
-    public long maxLatencyMs() {
-        return maxLatencyMs;
     }
 
     /** Whether anything at all happened in this window, used to suppress empty log lines. */

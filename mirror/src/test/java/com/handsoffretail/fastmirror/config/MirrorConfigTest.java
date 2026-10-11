@@ -11,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import com.handsoffretail.fastmirror.entity.GroupBy;
 import java.util.List;
+import java.time.LocalDate;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class MirrorConfigTest {
 
@@ -33,6 +36,7 @@ class MirrorConfigTest {
         values = new HashMap<>();
         values.put(MirrorConfig.KEY_SOURCE_FOLDER, sourceRoot.toString());
         values.put(MirrorConfig.KEY_MIRROR_FOLDER, mirrorRoot.toString());
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, "CPJ");
     }
 
     private MirrorConfig load() {
@@ -107,7 +111,7 @@ class MirrorConfigTest {
     // ------------------------------------------------------------------ CV-5 overlap
 
     @Test
-    @DisplayName("UT-09: a mirror folder nested inside the source folder is rejected as an overlap")
+    @DisplayName("a mirror folder nested inside the source folder is rejected as an overlap")
     void ut09_rejectsMirrorInsideSource() {
         values.put(MirrorConfig.KEY_MIRROR_FOLDER, sourceRoot.resolve("inner").toString());
 
@@ -143,7 +147,7 @@ class MirrorConfigTest {
     // ------------------------------------------------------------------ CV-6 non-interference
 
     @Test
-    @DisplayName("CV-6/NI-7: validation leaves the source folder completely untouched")
+    @DisplayName("CV-6: validation leaves the source folder completely untouched")
     void cv6_sourceFolderIsNeverWrittenTo() throws IOException {
         final List<String> before = listNames(sourceRoot);
 
@@ -164,20 +168,16 @@ class MirrorConfigTest {
         assertTrue(listNames(mirrorRoot).isEmpty(), "the write probe must not be left behind");
     }
 
-    // ------------------------------------------------------------------ CV-7 ranges
-
     @Test
-    @DisplayName("UT-10: a negative sweep interval is rejected and the valid range is stated")
-    void ut10_rejectsNegativeSweepInterval() {
-        values.put(MirrorConfig.KEY_SWEEP_INTERVAL_MS, "-1");
+    @DisplayName("the state folder for the ledger is created beside the exe")
+    void cv6_stateFolderIsCreatedBesideTheExe() {
+        final MirrorConfig config = load();
 
-        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
-
-        assertTrue(thrown.getMessage().contains("out of range"));
-        assertTrue(
-                thrown.getMessage().contains("0 to 600000"),
-                "message should state the valid range, was: " + thrown.getMessage());
+        assertTrue(Files.isDirectory(config.stateFolder()));
+        assertTrue(config.stateFolder().endsWith("state"));
     }
+
+    // ------------------------------------------------------------------ ranges
 
     @ParameterizedTest
     @CsvSource({
@@ -187,16 +187,21 @@ class MirrorConfigTest {
         "OPEN_RETRY_ATTEMPTS, 21",
         "OPEN_RETRY_INITIAL_MS, 0",
         "OPEN_RETRY_INITIAL_MS, 1001",
-        "SWEEP_INTERVAL_MS, 600001",
         "MAX_COPY_BYTES, -1",
         "STATS_INTERVAL_MS, 999",
-        "STATS_INTERVAL_MS, 3600001"
+        "STATS_INTERVAL_MS, 3600001",
+        "STABILITY_MINUTES, 0",
+        "STABILITY_MINUTES, 1441",
+        "SCAN_INTERVAL_SECONDS, 9",
+        "SCAN_INTERVAL_SECONDS, 3601"
     })
-    @DisplayName("CV-7: every numeric key rejects values outside its documented range")
-    void cv7_rejectsOutOfRange(String key, String value) {
+    @DisplayName("every numeric key rejects values outside its documented range")
+    void rejectsOutOfRange(String key, String value) {
         values.put(key, value);
 
-        assertThrows(ConfigException.class, this::load, key + "=" + value + " should be rejected");
+        final ConfigException thrown =
+                assertThrows(ConfigException.class, this::load, key + "=" + value + " should be rejected");
+        assertTrue(thrown.getMessage().contains("Valid range"), thrown.getMessage());
     }
 
     @ParameterizedTest
@@ -207,74 +212,190 @@ class MirrorConfigTest {
         "OPEN_RETRY_ATTEMPTS, 20",
         "OPEN_RETRY_INITIAL_MS, 1",
         "OPEN_RETRY_INITIAL_MS, 1000",
-        "SWEEP_INTERVAL_MS, 0",
-        "SWEEP_INTERVAL_MS, 600000",
         "MAX_COPY_BYTES, 0",
         "STATS_INTERVAL_MS, 1000",
-        "STATS_INTERVAL_MS, 3600000"
+        "STATS_INTERVAL_MS, 3600000",
+        "STABILITY_MINUTES, 1",
+        "STABILITY_MINUTES, 1440",
+        "SCAN_INTERVAL_SECONDS, 10",
+        "SCAN_INTERVAL_SECONDS, 3600"
     })
-    @DisplayName("CV-7: the documented range boundaries are accepted")
-    void cv7_acceptsBoundaries(String key, String value) {
+    @DisplayName("the documented range boundaries are accepted")
+    void acceptsBoundaries(String key, String value) {
         values.put(key, value);
 
         assertTrue(load() != null, key + "=" + value + " should be accepted");
     }
 
     @Test
-    @DisplayName("CV-7: a non-numeric value names the key and the expected range")
-    void cv7_rejectsNonNumeric() {
-        values.put(MirrorConfig.KEY_COPY_WORKERS, "four");
+    @DisplayName("a non-numeric value names the key and the expected range")
+    void rejectsNonNumeric() {
+        values.put(MirrorConfig.KEY_STABILITY_MINUTES, "three");
 
         final ConfigException thrown = assertThrows(ConfigException.class, this::load);
 
-        assertTrue(thrown.getMessage().contains(MirrorConfig.KEY_COPY_WORKERS));
+        assertTrue(thrown.getMessage().contains(MirrorConfig.KEY_STABILITY_MINUTES));
         assertTrue(thrown.getMessage().contains("whole number"));
     }
 
-    @Test
-    @DisplayName("CV-7: a boolean key accepts only exactly true or false")
-    void cv7_rejectsLooseBooleans() {
-        values.put(MirrorConfig.KEY_CONTENT_VERIFY, "yes");
-
-        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
-
-        assertTrue(thrown.getMessage().contains("exactly 'true' or 'false'"));
-    }
+    // ------------------------------------------------------------------ defaults
 
     @Test
-    @DisplayName("CV-7: booleans are case-insensitive")
-    void cv7_booleansAreCaseInsensitive() {
-        values.put(MirrorConfig.KEY_CONTENT_VERIFY, "TRUE");
-
-        assertTrue(load().contentVerify());
-    }
-
-    // ------------------------------------------------------------------ UT-11 defaults
-
-    @Test
-    @DisplayName("UT-11: every documented default is applied when the key is absent")
-    void ut11_appliesDocumentedDefaults() {
+    @DisplayName("every documented default is applied when the key is absent")
+    void appliesDocumentedDefaults() {
         final MirrorConfig config = load();
 
+        assertEquals(List.of("xml"), config.includeExtensions(), "INCLUDE_EXTENSIONS");
+        assertEquals(GroupBy.DATE, config.groupBy(), "GROUP_BY");
+        assertEquals(List.of(), config.includeSubfolders(), "INCLUDE_SUBFOLDERS");
+        assertEquals(List.of("pdf"), config.subfolderExtensions(), "SUBFOLDER_EXTENSIONS");
+        assertEquals(null, config.copyFromDate(), "COPY_FROM_DATE");
+        assertEquals(3, config.stabilityMinutes(), "STABILITY_MINUTES");
+        assertEquals(60, config.scanIntervalSeconds(), "SCAN_INTERVAL_SECONDS");
         assertEquals(4, config.copyWorkers(), "COPY_WORKERS");
         assertEquals(5, config.openRetryAttempts(), "OPEN_RETRY_ATTEMPTS");
         assertEquals(5L, config.openRetryInitialMs(), "OPEN_RETRY_INITIAL_MS");
-        assertEquals(500L, config.sweepIntervalMs(), "SWEEP_INTERVAL_MS");
-        assertFalse(config.contentVerify(), "CONTENT_VERIFY");
-        assertTrue(config.publishPartial(), "PUBLISH_PARTIAL defaults to true (PD-2)");
-        assertFalse(config.mirrorEmptyDirectories(), "MIRROR_EMPTY_DIRECTORIES");
         assertEquals(0L, config.maxCopyBytes(), "MAX_COPY_BYTES");
         assertEquals(List.of("~$*", "*.tmp", "*.fmtmp"), config.excludePatterns(), "EXCLUDE_PATTERNS");
         assertEquals(60_000L, config.statsIntervalMs(), "STATS_INTERVAL_MS");
         assertEquals(baseDirectory.resolve("logs"), config.logFolder(), "LOG_FOLDER");
+        assertEquals(List.of(), config.warnings());
+    }
+
+    // ------------------------------------------------------------------ what to copy
+
+    @Test
+    @DisplayName("prefixes are trimmed, upper-cased and de-duplicated")
+    void prefixesAreNormalized() {
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, " cpj, HRS ,,Cpj, ism ");
+
+        assertEquals(List.of("CPJ", "HRS", "ISM"), load().includePrefixes());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CP", "CPJX", "C-J", "C J"})
+    @DisplayName("a prefix that is not exactly 3 letters or digits is rejected")
+    void rejectsBadPrefix(String prefix) {
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, "CPJ," + prefix);
+
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains("exactly 3"), thrown.getMessage());
     }
 
     @Test
-    @DisplayName("PUBLISH_PARTIAL can be turned off to restore the stricter discard behaviour")
-    void publishPartialCanBeDisabled() {
-        values.put(MirrorConfig.KEY_PUBLISH_PARTIAL, "false");
+    @DisplayName("no prefixes and no subfolders means nothing to copy, which refuses to start")
+    void nothingToCopy() {
+        values.remove(MirrorConfig.KEY_INCLUDE_PREFIXES);
 
-        assertFalse(load().publishPartial());
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains("Nothing to copy"), thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("no prefixes but a subfolder is allowed, with a warning")
+    void subfoldersOnly() {
+        values.remove(MirrorConfig.KEY_INCLUDE_PREFIXES);
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals");
+
+        final MirrorConfig config = load();
+
+        assertEquals(List.of(), config.includePrefixes());
+        assertEquals(1, config.warnings().size());
+        assertTrue(config.warnings().get(0).contains(MirrorConfig.KEY_INCLUDE_PREFIXES));
+    }
+
+    @Test
+    @DisplayName("extensions accept xml, .xml and *.xml, and are lower-cased")
+    void extensionsAreNormalized() {
+        values.put(MirrorConfig.KEY_INCLUDE_EXTENSIONS, "XML, .txt, *.csv");
+        values.put(MirrorConfig.KEY_SUBFOLDER_EXTENSIONS, "PDF");
+
+        final MirrorConfig config = load();
+
+        assertEquals(List.of("xml", "txt", "csv"), config.includeExtensions());
+        assertEquals(List.of("pdf"), config.subfolderExtensions());
+    }
+
+    @Test
+    @DisplayName("an extension with a path or wildcard in it is rejected")
+    void rejectsBadExtension() {
+        values.put(MirrorConfig.KEY_INCLUDE_EXTENSIONS, "x?l");
+
+        assertThrows(ConfigException.class, this::load);
+    }
+
+    @Test
+    @DisplayName("GROUP_BY accepts DATE or MONTH in any case, and nothing else")
+    void groupBy() {
+        values.put(MirrorConfig.KEY_GROUP_BY, "month");
+        assertEquals(GroupBy.MONTH, load().groupBy());
+
+        values.put(MirrorConfig.KEY_GROUP_BY, "WEEK");
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+        assertTrue(thrown.getMessage().contains("DATE or MONTH"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"..", ".", "a/b", "a\\b", "C:"})
+    @DisplayName("INCLUDE_SUBFOLDERS accepts only plain folder names")
+    void rejectsBadSubfolder(String name) {
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, name);
+
+        assertThrows(ConfigException.class, this::load);
+    }
+
+    @Test
+    @DisplayName("subfolder names are de-duplicated ignoring case, keeping the first spelling")
+    void subfoldersAreDeduplicated() {
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals, journals, Reports");
+
+        assertEquals(List.of("Journals", "Reports"), load().includeSubfolders());
+    }
+
+    @Test
+    @DisplayName("COPY_FROM_DATE must be yyyy-MM-dd")
+    void copyFromDate() {
+        values.put(MirrorConfig.KEY_COPY_FROM_DATE, "2026-01-31");
+        assertEquals(LocalDate.of(2026, 1, 31), load().copyFromDate());
+
+        values.put(MirrorConfig.KEY_COPY_FROM_DATE, "31/01/2026");
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+        assertTrue(thrown.getMessage().contains("yyyy-MM-dd"));
+    }
+
+    // ------------------------------------------------------------------ state folder and retired keys
+
+    @Test
+    @DisplayName("a state folder inside the source folder is rejected")
+    void stateFolderNotInSource() {
+        values.put(MirrorConfig.KEY_STATE_FOLDER, sourceRoot.resolve("state").toString());
+
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains(MirrorConfig.KEY_STATE_FOLDER));
+    }
+
+    @Test
+    @DisplayName("a state folder inside the mirror folder is rejected, so the ledger is never uploaded")
+    void stateFolderNotInMirror() {
+        values.put(MirrorConfig.KEY_STATE_FOLDER, mirrorRoot.resolve("state").toString());
+
+        assertThrows(ConfigException.class, this::load);
+    }
+
+    @Test
+    @DisplayName("retired v2 keys produce a warning, not an error")
+    void retiredKeysWarn() {
+        values.put("SWEEP_INTERVAL_MS", "500");
+        values.put("CONTENT_VERIFY", "true");
+
+        final List<String> warnings = load().warnings();
+
+        assertEquals(2, warnings.size(), warnings.toString());
+        assertTrue(warnings.get(0).contains("SWEEP_INTERVAL_MS"));
+        assertTrue(warnings.get(1).contains("CONTENT_VERIFY"));
     }
 
     @Test
@@ -283,14 +404,6 @@ class MirrorConfigTest {
         values.put(MirrorConfig.KEY_EXCLUDE_PATTERNS, " *.bak , ~$* ,, *.swp ");
 
         assertEquals(List.of("*.bak", "~$*", "*.swp"), load().excludePatterns());
-    }
-
-    @Test
-    @DisplayName("a sweep interval of zero disables the sweep")
-    void zeroSweepIntervalDisablesSweep() {
-        values.put(MirrorConfig.KEY_SWEEP_INTERVAL_MS, "0");
-
-        assertFalse(load().sweepEnabled());
     }
 
     @Test
@@ -306,11 +419,12 @@ class MirrorConfigTest {
     }
 
     @Test
-    @DisplayName("the exclude pattern list is immutable once built")
-    void excludePatternsAreImmutable() {
-        final List<String> patterns = load().excludePatterns();
+    @DisplayName("the configured lists are immutable once built")
+    void listsAreImmutable() {
+        final MirrorConfig config = load();
 
-        assertThrows(UnsupportedOperationException.class, () -> patterns.add("*.new"));
+        assertThrows(UnsupportedOperationException.class, () -> config.excludePatterns().add("*.new"));
+        assertThrows(UnsupportedOperationException.class, () -> config.includePrefixes().add("NEW"));
     }
 
     private static List<String> listNames(Path directory) throws IOException {
