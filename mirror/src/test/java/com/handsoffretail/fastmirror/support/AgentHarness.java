@@ -174,11 +174,13 @@ public final class AgentHarness implements AutoCloseable {
         return file;
     }
 
+    /** Sets a creation time given as a wall-clock time in the default TIME_ZONE, New York. */
     public static void setCreated(Path file, LocalDateTime created) throws IOException {
-        Files.setAttribute(
-                file,
-                "basic:creationTime",
-                FileTime.from(created.atZone(ZoneId.systemDefault()).toInstant()));
+        setCreated(file, created.atZone(ZoneId.of(MirrorConfig.DEFAULT_TIME_ZONE)).toInstant());
+    }
+
+    public static void setCreated(Path file, java.time.Instant created) throws IOException {
+        Files.setAttribute(file, "basic:creationTime", FileTime.from(created));
     }
 
     /** Waits until the mirror holds exactly these bytes for this path. */

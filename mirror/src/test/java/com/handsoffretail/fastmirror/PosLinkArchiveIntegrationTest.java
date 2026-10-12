@@ -288,6 +288,341 @@ class PosLinkArchiveIntegrationTest {
         }
     }
 
+    // ------------------------------------------------------------------ keeps running
+
+    @Test
+    @DisplayName("a source folder that is missing at startup is picked up when it appears")
+    void startsWithoutSourceAndWaits() throws Exception {
+        final Path archive = sourceRoot.resolve("Archive");
+        try (AgentHarness agent =
+                AgentHarness.start(archive, mirrorRoot, baseDirectory)) {
+            agent.copyStableFiles();
+            agent.copyStableFiles();
+            assertEquals(
+                    1L,
+                    agent.problemLines().stream().filter(line -> line.contains("Source folder not available")).count(),
+                    "the outage is logged once, not on every scan");
+
+            agent.write("CPJ1.xml", "arrived late", OCT_15);
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("the source folder disappearing and coming back does not stop the agent")
+    void survivesSourceOutage() throws Exception {
+        final Path archive = Files.createDirectories(sourceRoot.resolve("Archive"));
+        final Path parked = sourceRoot.resolve("Archive-offline");
+        try (AgentHarness agent = AgentHarness.start(archive, mirrorRoot, baseDirectory)) {
+            agent.write("CPJ1.xml", "before", OCT_15);
+            agent.copyStableFiles();
+
+            Files.move(archive, parked); // the share drops out
+            agent.copyStableFiles();
+            agent.copyStableFiles();
+
+            Files.move(parked, archive); // and comes back
+            agent.write("CPJ2.xml", "after", OCT_15);
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of(
+                            "CPJ/2026/october/2026-10-15/CPJ1.xml",
+                            "CPJ/2026/october/2026-10-15/CPJ2.xml"),
+                    agent.mirroredFiles());
+            assertEquals(2L, agent.count(CopyOutcome.COPIED), "nothing copied twice across the outage");
+        }
+    }
+
+    // ------------------------------------------------------------------ date from the file name
+
+    private static final Map<String, String> STORE_ONE =
+            Map.of(
+                    "INCLUDE_PREFIXES", "CPJ,FGM",
+                    "DATE_SOURCE", "FILENAME",
+                    "FILENAME_DATE_PATTERN", "???yyyy-MM-dd*");
+
+    @Test
+    @DisplayName("a file named for 30 September but written on 2 October goes to September")
+    void lateFileGoesToItsOwnMonth() throws Exception {
+        try (AgentHarness agent = start(STORE_ONE)) {
+            agent.write("CPJ2026-09-30-590.xml", "september business day", LocalDateTime.of(2026, 10, 2, 6, 0));
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/september/2026-09-30/CPJ2026-09-30-590.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("store 2's layout: FGM3402609230009241533201.xml goes to 2026-09-23")
+    void storeTwoLayout() throws Exception {
+        try (AgentHarness agent =
+                start(
+                        Map.of(
+                                "INCLUDE_PREFIXES", "FGM",
+                                "DATE_SOURCE", "FILENAME",
+                                "FILENAME_DATE_PATTERN", "??????yyMMdd*",
+                                "GROUP_BY", "MONTH"))) {
+            agent.write("FGM3402609230009241533201.xml", "store two", OCT_15);
+            agent.copyStableFiles();
+
+            assertEquals(List.of("FGM/2026/september/FGM3402609230009241533201.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("a name without a date falls back to the creation date, with one warning")
+    void undatedNameFallsBack() throws Exception {
+        try (AgentHarness agent = start(STORE_ONE)) {
+            agent.write("CPJ_summary.xml", "no date in the name", OCT_15);
+            agent.copyStableFiles();
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ_summary.xml"), agent.mirroredFiles());
+            assertEquals(
+                    1L,
+                    agent.problemLines().stream().filter(line -> line.contains("No date matching")).count());
+        }
+    }
+
+    @Test
+    @DisplayName("COPY_FROM_DATE is compared with the date in the file name")
+    void copyFromDateUsesFileNameDate() throws Exception {
+        final Map<String, String> settings = new java.util.HashMap<>(STORE_ONE);
+        settings.put("COPY_FROM_DATE", "2026-10-01");
+        try (AgentHarness agent = start(settings)) {
+            // Both written in October, but only one is for October.
+            agent.write("CPJ2026-09-30-1.xml", "september", LocalDateTime.of(2026, 10, 2, 6, 0));
+            agent.write("CPJ2026-10-01-2.xml", "october", LocalDateTime.of(2026, 10, 2, 6, 0));
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/october/2026-10-01/CPJ2026-10-01-2.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("subfolder files use their own date setting")
+    void subfolderDateSetting() throws Exception {
+        final Map<String, String> settings = new java.util.HashMap<>(STORE_ONE);
+        settings.put("INCLUDE_SUBFOLDERS", "Journals");
+        settings.put("SUBFOLDER_DATE_SOURCE", "FILENAME");
+        settings.put("SUBFOLDER_FILENAME_DATE_PATTERN", "*_yyyyMMdd.pdf");
+        try (AgentHarness agent = start(settings)) {
+            agent.write("Journals/journal_20260815.pdf", "august journal", OCT_15);
+            agent.write("CPJ2026-09-13-590.xml", "root file", OCT_15);
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of(
+                            "CPJ/2026/september/2026-09-13/CPJ2026-09-13-590.xml",
+                            "Journals/2026/august/journal_20260815.pdf"),
+                    agent.mirroredFiles());
+        }
+    }
+
+    // ------------------------------------------------------------------ date from inside the file
+
+    /** The .env lines for a Gilbarco Passport store such as Wolf. */
+    private static final Map<String, String> PASSPORT =
+            Map.of(
+                    "INCLUDE_PREFIXES", "FGM,MCM,PJR,ILT",
+                    "DATE_SOURCE", "CONTENT",
+                    "CONTENT_DATE_FIELDS", "BusinessDate");
+
+    /** The .env lines for a Verifone store such as Tiki. */
+    private static final Map<String, String> VERIFONE =
+            Map.of(
+                    "INCLUDE_PREFIXES", "CPJ,SUM",
+                    "DATE_SOURCE", "CONTENT",
+                    "CONTENT_DATE_FIELDS", "periodEndDate,closedTime");
+
+    @Test
+    @DisplayName("Passport store: files written after midnight on 1 Oct go to their business day, 30 Sept")
+    void passportMonthEnd() throws Exception {
+        try (AgentHarness agent = start(PASSPORT)) {
+            final LocalDateTime written = LocalDateTime.of(2026, 10, 1, 0, 9);
+            agent.write(
+                    "FGM3402610010009241533201.xml",
+                    "<MovementHeader><BusinessDate>2026-09-30</BusinessDate><EndDate>2026-10-01</EndDate>",
+                    written);
+            agent.write(
+                    "PJR3402610010004181533189.xml",
+                    "<SaleEvent><EventStartDate>2026-10-01</EventStartDate><BusinessDate>2026-09-30</BusinessDate>",
+                    written);
+            agent.write(
+                    "MCM3402610020009421533209.xml",
+                    "<MovementHeader><BusinessDate>2026-10-01</BusinessDate>",
+                    LocalDateTime.of(2026, 10, 2, 0, 9));
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of(
+                            "FGM/2026/september/2026-09-30/FGM3402610010009241533201.xml",
+                            "MCM/2026/october/2026-10-01/MCM3402610020009421533209.xml",
+                            "PJR/2026/september/2026-09-30/PJR3402610010004181533189.xml"),
+                    agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("Passport store: an acknowledgement has no business date and falls back, with one warning")
+    void passportAcknowledgementFallsBack() throws Exception {
+        try (AgentHarness agent = start(PASSPORT)) {
+            agent.write(
+                    "ILTACK3402609250942421537747.xml",
+                    "<ACKHEADER><REFERENCEID>????</REFERENCEID><STATUSCODE>Success</STATUSCODE></ACKHEADER>",
+                    LocalDateTime.of(2026, 9, 25, 9, 42));
+            agent.copyStableFiles();
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of("ILT/2026/september/2026-09-25/ILTACK3402609250942421537747.xml"),
+                    agent.mirroredFiles());
+            assertEquals(
+                    1L,
+                    agent.problemLines().stream().filter(line -> line.contains("CONTENT_DATE_FIELDS")).count());
+        }
+    }
+
+    @Test
+    @DisplayName("Verifone store: reports by periodEndDate and the CPJ by closedTime, as written")
+    void verifoneStore() throws Exception {
+        try (AgentHarness agent = start(VERIFONE)) {
+            // Saved just after midnight, so its creation date is the 5th; the period ended on the 4th.
+            agent.write(
+                    "SUM2025-10-04-252.xml",
+                    "<pd:summaryPd><vs:period name=\"Day\" periodBeginDate=\"2025-10-03T23:45:08-04:00\""
+                            + " periodEndDate=\"2025-10-04T23:45:06-04:00\" />",
+                    LocalDateTime.of(2025, 10, 5, 0, 2));
+            agent.write(
+                    "CPJ2026-09-13-590.xml",
+                    "<transSet longId=\"2026-09-13T21:40:45-04:00\"><openedTime>2026-09-12T21:40:31-04:00</openedTime>"
+                            + "<closedTime>2026-09-13T21:40:45-04:00</closedTime>"
+                            + "<trans><trHeader><date>2026-09-12T21:42:24-04:00</date>",
+                    LocalDateTime.of(2026, 9, 13, 21, 41));
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of(
+                            "CPJ/2026/september/2026-09-13/CPJ2026-09-13-590.xml",
+                            "SUM/2025/october/2025-10-04/SUM2025-10-04-252.xml"),
+                    agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("COPY_FROM_DATE is compared with the date inside the file")
+    void copyFromDateUsesContentDate() throws Exception {
+        final Map<String, String> settings = new java.util.HashMap<>(PASSPORT);
+        settings.put("COPY_FROM_DATE", "2026-10-01");
+        try (AgentHarness agent = start(settings)) {
+            // Both written on 1 Oct; only one is for October.
+            agent.write(
+                    "FGM3402610010009241533201.xml",
+                    "<BusinessDate>2026-09-30</BusinessDate>",
+                    LocalDateTime.of(2026, 10, 1, 0, 9));
+            agent.write(
+                    "MCM3402610010008001533209.xml",
+                    "<BusinessDate>2026-10-01</BusinessDate>",
+                    LocalDateTime.of(2026, 10, 1, 23, 0));
+            agent.copyStableFiles();
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of("MCM/2026/october/2026-10-01/MCM3402610010008001533209.xml"),
+                    agent.mirroredFiles());
+        }
+    }
+
+    // ------------------------------------------------------------------ two source folders
+
+    @Test
+    @DisplayName("Passport store: XML from BOOutBox by content, PDFs from PassportReports by print time")
+    void passportXmlAndPdfFolders() throws Exception {
+        final Path outBox = Files.createDirectories(sourceRoot.resolve("BOOutBox"));
+        final Path reports = Files.createDirectories(sourceRoot.resolve("PassportReports"));
+        final Map<String, String> settings = new java.util.HashMap<>(PASSPORT);
+        settings.put("INCLUDE_PREFIXES", "MCM");
+        settings.put("INCLUDE_SUBFOLDERS", reports.toString());
+        settings.put("SUBFOLDER_EXTENSIONS", "pdf");
+        settings.put("SUBFOLDER_DATE_SOURCE", "FILENAME");
+        settings.put("SUBFOLDER_FILENAME_DATE_PATTERN", "*yyyyMMddHHmmss.pdf");
+        settings.put("BUSINESS_DAY_STARTS_AT", "03:00");
+        settings.put("EXCLUDE_PATTERNS", "~$*,*.tmp,*.fmtmp,UNREADEMAIL*");
+
+        try (AgentHarness agent = AgentHarness.start(outBox, mirrorRoot, baseDirectory, settings)) {
+            agent.write("MCM3402610010009421533209.xml", "<BusinessDate>2026-09-30</BusinessDate>",
+                    LocalDateTime.of(2026, 10, 1, 0, 9));
+            for (final String pdf : List.of(
+                    "StoreClose20261001001017.pdf", // month end: business day 30 Sept
+                    "ShiftClose20261001001002.pdf", // night shift of 30 Sept
+                    "ShiftClose20260930122815.pdf", // midday shift of 30 Sept
+                    "UNREADEMAIL20261001000823173032400196800000220261001000750.pdf")) {
+                Files.writeString(reports.resolve(pdf), "%PDF-1.4 " + pdf);
+            }
+            agent.copyStableFiles();
+
+            assertEquals(
+                    List.of(
+                            "MCM/2026/september/2026-09-30/MCM3402610010009421533209.xml",
+                            "PassportReports/2026/september/ShiftClose20260930122815.pdf",
+                            "PassportReports/2026/september/ShiftClose20261001001002.pdf",
+                            "PassportReports/2026/september/StoreClose20261001001017.pdf"),
+                    agent.mirroredFiles());
+        }
+
+        // After a restart nothing is copied again: the ledger finds the PDFs in their own folder.
+        try (AgentHarness restarted = AgentHarness.start(outBox, mirrorRoot, baseDirectory, settings)) {
+            restarted.copyStableFiles();
+
+            assertEquals(0L, restarted.count(CopyOutcome.COPIED) + restarted.count(CopyOutcome.REPLACED));
+        }
+    }
+
+    // ------------------------------------------------------------------ time zone
+
+    /** 02:30 UTC on 16 October is 22:30 on 15 October in New York. */
+    private static final java.time.Instant LATE_EVENING_NEW_YORK =
+            java.time.Instant.parse("2026-10-16T02:30:00Z");
+
+    @Test
+    @DisplayName("dates are New York dates by default, whatever the PC's own time zone")
+    void newYorkDateByDefault() throws Exception {
+        try (AgentHarness agent = start()) {
+            final Path file = agent.write("CPJ1.xml", "late evening");
+            AgentHarness.setCreated(file, LATE_EVENING_NEW_YORK);
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("TIME_ZONE changes which date a creation time falls on")
+    void configurableTimeZone() throws Exception {
+        try (AgentHarness agent = start(Map.of("TIME_ZONE", "UTC"))) {
+            final Path file = agent.write("CPJ1.xml", "late evening");
+            AgentHarness.setCreated(file, LATE_EVENING_NEW_YORK);
+            agent.copyStableFiles();
+
+            assertEquals(List.of("CPJ/2026/october/2026-10-16/CPJ1.xml"), agent.mirroredFiles());
+        }
+    }
+
+    @Test
+    @DisplayName("COPY_FROM_DATE is compared with the New York date")
+    void copyFromDateUsesTimeZone() throws Exception {
+        try (AgentHarness agent = start(Map.of("COPY_FROM_DATE", "2026-10-16"))) {
+            final Path file = agent.write("CPJ1.xml", "still the 15th in New York");
+            AgentHarness.setCreated(file, LATE_EVENING_NEW_YORK);
+            agent.copyStableFiles();
+
+            assertEquals(List.of(), agent.mirroredFiles());
+        }
+    }
+
     // ------------------------------------------------------------------ further behaviour
 
     @Test

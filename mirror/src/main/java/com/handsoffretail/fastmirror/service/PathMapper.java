@@ -26,7 +26,7 @@ public interface PathMapper {
      *
      * @throws IllegalArgumentException if the result would escape the mirror root
      */
-    Path targetFor(Selection selection, Path relativeSource, LocalDate creationDate);
+    Path targetFor(Selection selection, Path relativeSource, LocalDate fileDate);
 
     /**
      * The mirror path for a relative target path.

@@ -22,6 +22,7 @@ import java.awt.image.BufferedImage;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -57,6 +58,9 @@ public final class SystemTrayServiceImpl implements TrayService {
 
     /** Windows truncates notification-area tooltips at 127 characters. */
     private static final int TOOLTIP_LIMIT = 127;
+
+    /** The longest {@link #close()} waits for the icon to be removed. */
+    private static final long CLOSE_WAIT_MS = 2_000L;
 
     private static final Color RUNNING_GREEN = new Color(0x1E, 0x8E, 0x3E);
 
@@ -118,6 +122,15 @@ public final class SystemTrayServiceImpl implements TrayService {
         return true;
     }
 
+    /**
+     * Removes the icon, waiting at most {@link #CLOSE_WAIT_MS}.
+     *
+     * <p>The wait is bounded because this can be reached from a shutdown hook. By then the JDK's
+     * own AWT shutdown hook may already have stopped the Windows message thread, and removing a
+     * tray icon needs that thread: an unbounded wait here once hung the process for good after
+     * Exit, keeping {@code FastMirror.exe} locked. If the icon cannot be removed in time, Windows
+     * clears it once it notices the owning process has gone.
+     */
     @Override
     public void close() {
         final ScheduledExecutorService scheduler = refresher;
@@ -134,12 +147,19 @@ public final class SystemTrayServiceImpl implements TrayService {
             remove.run();
             return;
         }
+        final CountDownLatch removed = new CountDownLatch(1);
+        EventQueue.invokeLater(
+                () -> {
+                    try {
+                        remove.run();
+                    } finally {
+                        removed.countDown();
+                    }
+                });
         try {
-            EventQueue.invokeAndWait(remove);
+            removed.await(CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
-        } catch (final InvocationTargetException e) {
-            // The process is ending; Windows clears the icon once it notices the owner has gone.
         }
     }
 
@@ -233,10 +253,9 @@ public final class SystemTrayServiceImpl implements TrayService {
         }
 
         logger.info("Exit requested from the tray icon");
-        final TrayIcon current = icon;
-        if (current != null) {
-            current.setToolTip(PRODUCT + ": stopping...");
-        }
+        // Remove the icon now, on this thread, while Windows messaging still works. Leaving it to
+        // the shutdown hook raced the JDK's AWT shutdown and could hang the process forever.
+        close();
         final Thread exitThread = new Thread(onExit, "fastmirror-exit");
         exitThread.setDaemon(false);
         exitThread.start();

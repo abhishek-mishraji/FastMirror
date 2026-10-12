@@ -8,6 +8,7 @@ import com.handsoffretail.fastmirror.logging.AppLogger;
 import com.handsoffretail.fastmirror.service.ArchiveFileFilter;
 import com.handsoffretail.fastmirror.service.CopyLedger;
 import com.handsoffretail.fastmirror.service.CopyQueue;
+import com.handsoffretail.fastmirror.service.FileDateResolver;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import com.handsoffretail.fastmirror.service.ScanService;
 import com.handsoffretail.fastmirror.service.StabilityTracker;
@@ -18,7 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Clock;
 import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.Objects;
@@ -43,11 +43,11 @@ public final class ArchiveScanServiceImpl implements ScanService {
     private final MirrorConfig config;
     private final PathMapper mapper;
     private final ArchiveFileFilter filter;
+    private final FileDateResolver dates;
     private final StabilityTracker tracker;
     private final CopyLedger ledger;
     private final CopyQueue queue;
     private final AppLogger logger;
-    private final Clock clock;
 
     private final ScheduledExecutorService scheduler;
 
@@ -57,25 +57,31 @@ public final class ArchiveScanServiceImpl implements ScanService {
     /** Files already reported as too large, for the same reason. */
     private final Set<Path> reportedTooLarge = ConcurrentHashMap.newKeySet();
 
+    /** Folders that could not be listed on the last attempt, so a failure is logged once. */
+    private final Set<Path> unlistable = ConcurrentHashMap.newKeySet();
+
+    /** Whether the source folder was there at the last scan; {@code null} before the first. */
+    private Boolean sourceAvailable;
+
     private boolean firstScanDone;
 
     public ArchiveScanServiceImpl(
             MirrorConfig config,
             PathMapper mapper,
             ArchiveFileFilter filter,
+            FileDateResolver dates,
             StabilityTracker tracker,
             CopyLedger ledger,
             CopyQueue queue,
-            AppLogger logger,
-            Clock clock) {
+            AppLogger logger) {
         this.config = Objects.requireNonNull(config, "config");
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.filter = Objects.requireNonNull(filter, "filter");
+        this.dates = Objects.requireNonNull(dates, "dates");
         this.tracker = Objects.requireNonNull(tracker, "tracker");
         this.ledger = Objects.requireNonNull(ledger, "ledger");
         this.queue = Objects.requireNonNull(queue, "queue");
         this.logger = Objects.requireNonNull(logger, "logger");
-        this.clock = Objects.requireNonNull(clock, "clock");
         this.scheduler =
                 Executors.newSingleThreadScheduledExecutor(
                         runnable -> {
@@ -88,11 +94,20 @@ public final class ArchiveScanServiceImpl implements ScanService {
     /** Synchronized: the scheduled scan and an on-demand scan must never interleave. */
     @Override
     public synchronized void scan() {
+        if (!sourceIsAvailable()) {
+            return;
+        }
         final Tally tally = new Tally();
 
-        scanFolder(config.sourceFolder(), tally);
+        if (!scanFolder(config.sourceFolder(), tally)) {
+            // Listing the root failed, so "present" is incomplete. Forgetting every waiting file
+            // would restart all their stability clocks, so this scan changes nothing.
+            return;
+        }
         for (final String subfolder : config.includeSubfolders()) {
-            final Path directory = config.sourceFolder().resolve(subfolder);
+            final Path external = config.externalSubfolders().get(subfolder);
+            final Path directory =
+                    external != null ? external : config.sourceFolder().resolve(subfolder);
             if (!Files.isDirectory(directory)) {
                 if (reportedMissing.add(subfolder)) {
                     logger.warn(
@@ -107,6 +122,7 @@ public final class ArchiveScanServiceImpl implements ScanService {
         }
 
         tracker.retainOnly(tally.present);
+        dates.retainOnly(tally.keys);
 
         if (!firstScanDone) {
             firstScanDone = true;
@@ -147,10 +163,29 @@ public final class ArchiveScanServiceImpl implements ScanService {
 
     private static final class Tally {
         private final Set<Path> present = new HashSet<>();
+        private final Set<LedgerKey> keys = new HashSet<>();
         private int submitted;
     }
 
-    private void scanFolder(Path directory, Tally tally) {
+    /**
+     * The source folder can disappear and come back - a network drive or VM share disconnecting -
+     * and the agent must ride that out rather than stop. Each change is logged once.
+     */
+    private boolean sourceIsAvailable() {
+        final boolean available = Files.isDirectory(config.sourceFolder());
+        if (!available && !Boolean.FALSE.equals(sourceAvailable)) {
+            logger.warn(
+                    "Source folder not available, will keep checking every "
+                            + config.scanIntervalSeconds() + "s: " + config.sourceFolder());
+        } else if (available && Boolean.FALSE.equals(sourceAvailable)) {
+            logger.info("Source folder is available again: " + config.sourceFolder());
+        }
+        sourceAvailable = available;
+        return available;
+    }
+
+    /** @return whether the folder could be listed */
+    private boolean scanFolder(Path directory, Tally tally) {
         try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {
             for (final Path entry : entries) {
                 try {
@@ -160,8 +195,15 @@ public final class ArchiveScanServiceImpl implements ScanService {
                 }
             }
         } catch (final IOException | DirectoryIteratorException e) {
-            logger.warn("Could not list " + directory + ": " + e);
+            if (unlistable.add(directory)) {
+                logger.warn("Could not list " + directory + ", will keep trying: " + e);
+            }
+            return false;
         }
+        if (unlistable.remove(directory)) {
+            logger.info("Listing works again: " + directory);
+        }
+        return true;
     }
 
     private void consider(Path file, Tally tally) {
@@ -177,9 +219,7 @@ public final class ArchiveScanServiceImpl implements ScanService {
         }
 
         final Path relative = mapper.relativize(file);
-        final LocalDate creationDate =
-                LocalDate.ofInstant(attributes.creationTime().toInstant(), clock.getZone());
-        final Optional<Selection> selection = filter.select(relative, creationDate);
+        final Optional<Selection> selection = filter.select(relative);
         if (selection.isEmpty()) {
             return;
         }
@@ -188,6 +228,15 @@ public final class ArchiveScanServiceImpl implements ScanService {
                 LedgerKey.of(relative, attributes.creationTime().toMillis(), attributes.size());
         if (ledger.contains(key)) {
             tracker.forget(relative);
+            return;
+        }
+        tally.keys.add(key);
+
+        // The date from the creation time or the file name is known at once. A date inside the file
+        // is known only once the file has been read, which happens when it is stable (below).
+        final Optional<LocalDate> knownDate =
+                dates.knownDate(relative, key, attributes.creationTime());
+        if (knownDate.isPresent() && !filter.withinDateRange(knownDate.get())) {
             return;
         }
 
@@ -201,13 +250,26 @@ public final class ArchiveScanServiceImpl implements ScanService {
         }
 
         tally.present.add(relative);
-        if (tracker.observe(relative, attributes.size(), attributes.lastModifiedTime())) {
-            queue.submit(
-                    new CopyJob(
-                            relative,
-                            mapper.targetFor(selection.get(), relative, creationDate),
-                            key));
-            tally.submitted++;
+        if (!tracker.observe(relative, attributes.size(), attributes.lastModifiedTime())) {
+            return;
         }
+
+        // Stable. Read the date inside the file now if that is the configured source: once, since
+        // the answer is remembered, and never while the producer may still be writing it.
+        final Optional<LocalDate> fileDate =
+                knownDate.isPresent()
+                        ? knownDate
+                        : dates.dateOf(relative, key, attributes.creationTime());
+        if (fileDate.isEmpty() || !filter.withinDateRange(fileDate.get())) {
+            // Unreadable right now (tried again next scan), or before COPY_FROM_DATE.
+            return;
+        }
+
+        queue.submit(
+                new CopyJob(
+                        relative,
+                        mapper.targetFor(selection.get(), relative, fileDate.get()),
+                        key));
+        tally.submitted++;
     }
 }

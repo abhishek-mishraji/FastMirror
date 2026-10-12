@@ -79,7 +79,17 @@ class CopyQueueImplTest {
     }
 
     private static FileCopier copier(Function<CopyJob, CopyResult> behaviour) {
-        return behaviour::apply;
+        return new FileCopier() {
+            @Override
+            public CopyResult copy(CopyJob job) {
+                return behaviour.apply(job);
+            }
+
+            @Override
+            public java.util.Optional<byte[]> readHead(Path relative, int maxBytes) {
+                return java.util.Optional.empty();
+            }
+        };
     }
 
     private static CopyJob job(String name) {

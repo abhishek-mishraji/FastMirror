@@ -22,7 +22,9 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.Clock;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -183,6 +185,28 @@ public final class AtomicFileCopierImpl implements FileCopier {
             return CopyResult.failed(t);
         } finally {
             deleteStaging(staging);
+        }
+    }
+
+    @Override
+    public Optional<byte[]> readHead(Path relative, int maxBytes) {
+        Objects.requireNonNull(relative, "relative");
+        final Path source;
+        try {
+            source = mapper.toSource(relative);
+        } catch (final RuntimeException e) {
+            return Optional.empty();
+        }
+        // One attempt, no retry: a locked or vanished file is simply read on a later scan, so there
+        // is no reason to press on a file the producer is busy with.
+        try (SeekableByteChannel in = opener.open(source)) {
+            final ByteBuffer buffer = ByteBuffer.allocate(Math.max(0, maxBytes));
+            while (buffer.hasRemaining() && in.read(buffer) >= 0) {
+                // A bounded read of the first maxBytes and nothing more.
+            }
+            return Optional.of(Arrays.copyOf(buffer.array(), buffer.position()));
+        } catch (final IOException | RuntimeException e) {
+            return Optional.empty();
         }
     }
 

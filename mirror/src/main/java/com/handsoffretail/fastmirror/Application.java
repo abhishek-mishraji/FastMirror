@@ -1,12 +1,16 @@
 package com.handsoffretail.fastmirror;
 
 import com.handsoffretail.fastmirror.config.ConfigException;
+import com.handsoffretail.fastmirror.config.ContentDateFields;
 import com.handsoffretail.fastmirror.config.EnvFileReader;
+import com.handsoffretail.fastmirror.config.FileNameDatePattern;
 import com.handsoffretail.fastmirror.config.MirrorConfig;
+import com.handsoffretail.fastmirror.entity.DateSource;
 import com.handsoffretail.fastmirror.logging.AppLogger;
 import com.handsoffretail.fastmirror.service.ArchiveFileFilter;
 import com.handsoffretail.fastmirror.service.CopyQueue;
 import com.handsoffretail.fastmirror.service.FileCopier;
+import com.handsoffretail.fastmirror.service.FileDateResolver;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import com.handsoffretail.fastmirror.service.ScanService;
 import com.handsoffretail.fastmirror.service.StabilityTracker;
@@ -17,12 +21,14 @@ import com.handsoffretail.fastmirror.service.implementation.ArchiveScanServiceIm
 import com.handsoffretail.fastmirror.service.implementation.AtomicFileCopierImpl;
 import com.handsoffretail.fastmirror.service.implementation.CopyQueueImpl;
 import com.handsoffretail.fastmirror.service.implementation.FileCopyLedgerImpl;
+import com.handsoffretail.fastmirror.service.implementation.FileDateResolverImpl;
 import com.handsoffretail.fastmirror.service.implementation.GlobPathFilterImpl;
 import com.handsoffretail.fastmirror.service.implementation.GroupedPathMapperImpl;
 import com.handsoffretail.fastmirror.service.implementation.LoggingStatsReporterImpl;
 import com.handsoffretail.fastmirror.service.implementation.StabilityTrackerImpl;
 import com.handsoffretail.fastmirror.service.implementation.SystemTrayServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.ThreadSleeperImpl;
+import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.FileVisitResult;
@@ -38,6 +44,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.swing.JFrame;
+import javax.swing.JOptionPane;
 
 /**
  * The composition root: construction, wiring and startup ordering, and nothing else.
@@ -80,6 +88,7 @@ public final class Application {
             logger.error("Configuration error: " + e.getMessage());
             System.err.println("FastMirror configuration error: " + e.getMessage());
             logger.close();
+            showStartupError(e.getMessage());
             System.exit(EXIT_CONFIG_ERROR);
             return;
         }
@@ -135,9 +144,12 @@ public final class Application {
         deleteStaleStagingFiles(config, logger);
 
         // 5. The ledger of files already copied, compacted.
+        final PathMapper mapper =
+                new GroupedPathMapperImpl(
+                        config.sourceFolder(), config.mirrorFolder(), config.externalSubfolders());
         final FileCopyLedgerImpl ledger;
         try {
-            ledger = FileCopyLedgerImpl.open(config.stateFolder(), config.sourceFolder(), logger);
+            ledger = FileCopyLedgerImpl.open(config.stateFolder(), mapper::toSource, logger);
         } catch (final IOException e) {
             throw new ConfigException(
                     "The copy ledger in " + config.stateFolder() + " could not be read ("
@@ -145,17 +157,17 @@ public final class Application {
         }
 
         // 6. Construct. Constructor injection only; every dependency is final.
-        final PathMapper mapper = new GroupedPathMapperImpl(config.sourceFolder(), config.mirrorFolder());
         final ArchiveFileFilter filter =
                 new ArchiveFileFilterImpl(config, new GlobPathFilterImpl(config.excludePatterns()));
         final StatsReporter stats = new LoggingStatsReporterImpl(logger, config.statsIntervalMs());
         final FileCopier copier =
                 new AtomicFileCopierImpl(config, mapper, new ThreadSleeperImpl(), logger, clock);
         final CopyQueue queue = new CopyQueueImpl(copier, ledger, stats, logger, config.copyWorkers());
+        final FileDateResolver dates = new FileDateResolverImpl(config, copier, logger);
         final StabilityTracker tracker =
                 new StabilityTrackerImpl(Duration.ofMinutes(config.stabilityMinutes()), clock);
         final ScanService scanner =
-                new ArchiveScanServiceImpl(config, mapper, filter, tracker, ledger, queue, logger, clock);
+                new ArchiveScanServiceImpl(config, mapper, filter, dates, tracker, ledger, queue, logger);
 
         final Handle handle = new Handle(config, logger, queue, scanner, stats);
 
@@ -178,6 +190,7 @@ public final class Application {
                                 : ", subfolders=" + String.join(",", config.includeSubfolders())
                                         + " ." + String.join(",.", config.subfolderExtensions()))
                         + (config.copyFromDate() == null ? "" : ", from=" + config.copyFromDate())
+                        + ", date from " + describeDateSource(config)
                         + ", stable after " + config.stabilityMinutes() + " min"
                         + ", scan every " + config.scanIntervalSeconds() + "s"
                         + ", workers=" + config.copyWorkers()
@@ -291,6 +304,36 @@ public final class Application {
 
     // ---------------------------------------------------------------- private wiring helpers
 
+    private static String describeDateSource(MirrorConfig config) {
+        final String root =
+                describe(
+                        config.dateSource(),
+                        config.fileNameDatePattern(),
+                        config.contentDateFields(),
+                        config);
+        if (config.includeSubfolders().isEmpty()) {
+            return root;
+        }
+        return root + ", subfolders: "
+                + describe(
+                        config.subfolderDateSource(),
+                        config.subfolderFileNameDatePattern(),
+                        config.subfolderContentDateFields(),
+                        config);
+    }
+
+    private static String describe(
+            DateSource source,
+            FileNameDatePattern pattern,
+            ContentDateFields fields,
+            MirrorConfig config) {
+        return switch (source) {
+            case CREATED -> "creation time (" + config.timeZone() + ")";
+            case FILENAME -> "file name " + pattern;
+            case CONTENT -> "content field " + fields;
+        };
+    }
+
     /** The only files FastMirror ever deletes are its own staging files. */
     private static void deleteStaleStagingFiles(MirrorConfig config, AppLogger logger) {
         final int[] removed = {0};
@@ -321,6 +364,35 @@ public final class Application {
         }
         if (removed[0] > 0) {
             logger.info("Removed " + removed[0] + " stale staging file(s)");
+        }
+    }
+
+    /**
+     * The exe has no console, so without this a mistake in .env would make the agent vanish with
+     * the reason only in the log. Skipped where there is no desktop, such as a Windows service.
+     */
+    private static void showStartupError(String message) {
+        if (GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+        try {
+            final JFrame owner = new JFrame();
+            owner.setUndecorated(true);
+            owner.setAlwaysOnTop(true);
+            owner.setLocationRelativeTo(null);
+            owner.setVisible(true);
+            try {
+                JOptionPane.showMessageDialog(
+                        owner,
+                        "FastMirror could not start.\n\n" + message
+                                + "\n\nCorrect .env beside FastMirror.exe and start it again.",
+                        "FastMirror",
+                        JOptionPane.ERROR_MESSAGE);
+            } finally {
+                owner.dispose();
+            }
+        } catch (final RuntimeException e) {
+            // No usable desktop after all; the log line already says what went wrong.
         }
     }
 

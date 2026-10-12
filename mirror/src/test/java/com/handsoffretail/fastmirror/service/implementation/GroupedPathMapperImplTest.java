@@ -94,6 +94,24 @@ class GroupedPathMapperImplTest {
     }
 
     @Test
+    @DisplayName("a folder outside the source root is addressed by its name, ignoring case")
+    void externalFolder() {
+        final Path reports = Path.of("Z:/PassportReports").toAbsolutePath();
+        final GroupedPathMapperImpl withReports =
+                new GroupedPathMapperImpl(sourceRoot, mirrorRoot, java.util.Map.of("PassportReports", reports));
+        final Path pdf = reports.resolve("StoreClose20260924000416.pdf");
+
+        final Path relative = withReports.relativize(pdf);
+
+        assertEquals(Path.of("PassportReports", "StoreClose20260924000416.pdf"), relative);
+        assertEquals(pdf, withReports.toSource(relative));
+        assertEquals(pdf, withReports.toSource(Path.of("passportreports/storeclose20260924000416.pdf")).getParent()
+                .resolve("StoreClose20260924000416.pdf"));
+        assertEquals(sourceRoot.resolve("CPJ1.xml"), withReports.toSource(Path.of("CPJ1.xml")));
+        assertThrows(IllegalArgumentException.class, () -> withReports.toSource(Path.of("PassportReports", "..", "..", "x")));
+    }
+
+    @Test
     @DisplayName("relativize, toSource and toTarget keep their containment checks")
     void containment() {
         assertEquals(Path.of("CPJ1.xml"), mapper.relativize(sourceRoot.resolve("CPJ1.xml")));

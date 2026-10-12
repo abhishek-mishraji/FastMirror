@@ -7,7 +7,9 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.TextStyle;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
  * Maps a selected source file to {@code <folder>/<yyyy>/<month>/[<yyyy-MM-dd>/]<name>}.
@@ -21,15 +23,35 @@ public final class GroupedPathMapperImpl implements PathMapper {
     private final Path sourceRoot;
     private final Path mirrorRoot;
 
+    /**
+     * Folders outside the source root, by name. A file in one is identified by the relative path
+     * {@code <name>/<file>}, as if the folder sat inside the source root, so the rest of the agent -
+     * selection, layout, ledger - treats both kinds of folder the same way. Case-insensitive,
+     * because ledger keys are lower case.
+     */
+    private final Map<String, Path> externalFolders = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+
     public GroupedPathMapperImpl(Path sourceRoot, Path mirrorRoot) {
+        this(sourceRoot, mirrorRoot, Map.of());
+    }
+
+    public GroupedPathMapperImpl(Path sourceRoot, Path mirrorRoot, Map<String, Path> externalFolders) {
         this.sourceRoot = Objects.requireNonNull(sourceRoot, "sourceRoot").toAbsolutePath().normalize();
         this.mirrorRoot = Objects.requireNonNull(mirrorRoot, "mirrorRoot").toAbsolutePath().normalize();
+        Objects.requireNonNull(externalFolders, "externalFolders")
+                .forEach((name, folder) -> this.externalFolders.put(name, folder.toAbsolutePath().normalize()));
     }
 
     @Override
     public Path relativize(Path sourceFile) {
         Objects.requireNonNull(sourceFile, "sourceFile");
         final Path absolute = sourceFile.toAbsolutePath().normalize();
+        for (final Map.Entry<String, Path> external : externalFolders.entrySet()) {
+            final Path folder = external.getValue();
+            if (absolute.startsWith(folder) && !absolute.equals(folder)) {
+                return Path.of(external.getKey()).resolve(folder.relativize(absolute));
+            }
+        }
         if (!absolute.startsWith(sourceRoot)) {
             throw new IllegalArgumentException(
                     "Path is outside the source root: " + absolute + " (source root " + sourceRoot + ")");
@@ -41,18 +63,18 @@ public final class GroupedPathMapperImpl implements PathMapper {
     }
 
     @Override
-    public Path targetFor(Selection selection, Path relativeSource, LocalDate creationDate) {
+    public Path targetFor(Selection selection, Path relativeSource, LocalDate fileDate) {
         Objects.requireNonNull(selection, "selection");
         Objects.requireNonNull(relativeSource, "relativeSource");
-        Objects.requireNonNull(creationDate, "creationDate");
+        Objects.requireNonNull(fileDate, "fileDate");
 
         Path target =
                 Path.of(
                         selection.destinationFolder(),
-                        String.valueOf(creationDate.getYear()),
-                        monthName(creationDate));
+                        String.valueOf(fileDate.getYear()),
+                        monthName(fileDate));
         if (selection.groupBy() == GroupBy.DATE) {
-            target = target.resolve(creationDate.toString()); // ISO yyyy-MM-dd
+            target = target.resolve(fileDate.toString()); // ISO yyyy-MM-dd
         }
         target = target.resolve(relativeSource.getFileName().toString());
 
@@ -68,6 +90,13 @@ public final class GroupedPathMapperImpl implements PathMapper {
 
     @Override
     public Path toSource(Path relative) {
+        Objects.requireNonNull(relative, "relative");
+        if (!relative.isAbsolute() && relative.getNameCount() > 1) {
+            final Path folder = externalFolders.get(relative.getName(0).toString());
+            if (folder != null) {
+                return resolveWithin(folder, relative.subpath(1, relative.getNameCount()), "folder");
+            }
+        }
         return resolveWithin(sourceRoot, relative, "source");
     }
 

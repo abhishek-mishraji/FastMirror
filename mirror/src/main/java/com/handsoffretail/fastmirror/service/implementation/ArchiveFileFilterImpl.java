@@ -15,7 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Selection by prefix, extension, subfolder and creation date.
+ * Selection by prefix, extension and subfolder, plus the {@code COPY_FROM_DATE} check.
  *
  * <p>Prefixes, extensions and subfolder names are all compared ignoring case, because Windows file
  * names are case-insensitive. The destination folder of a root file is always the upper-case prefix,
@@ -49,14 +49,10 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
     }
 
     @Override
-    public Optional<Selection> select(Path relative, LocalDate creationDate) {
+    public Optional<Selection> select(Path relative) {
         Objects.requireNonNull(relative, "relative");
-        Objects.requireNonNull(creationDate, "creationDate");
 
         if (relative.isAbsolute() || excludes.isExcluded(relative)) {
-            return Optional.empty();
-        }
-        if (copyFromDate != null && creationDate.isBefore(copyFromDate)) {
             return Optional.empty();
         }
 
@@ -66,6 +62,12 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
             case 2 -> selectSubfolderFile(relative.getName(0).toString(), name);
             default -> Optional.empty(); // Nested deeper than an included subfolder.
         };
+    }
+
+    @Override
+    public boolean withinDateRange(LocalDate fileDate) {
+        Objects.requireNonNull(fileDate, "fileDate");
+        return copyFromDate == null || !fileDate.isBefore(copyFromDate);
     }
 
     private Optional<Selection> selectRootFile(String name) {

@@ -1,6 +1,7 @@
 package com.handsoffretail.fastmirror.service.implementation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.handsoffretail.fastmirror.config.MirrorConfig;
@@ -42,7 +43,7 @@ class ArchiveFileFilterImplTest {
     }
 
     private Optional<Selection> select(String relative) {
-        return filter().select(Path.of(relative), DAY);
+        return filter().select(Path.of(relative));
     }
 
     @Test
@@ -113,15 +114,15 @@ class ArchiveFileFilterImplTest {
     }
 
     @Test
-    @DisplayName("COPY_FROM_DATE is inclusive and applies to root and subfolder files")
+    @DisplayName("COPY_FROM_DATE is inclusive, and everything is in range when it is not set")
     void copyFromDate() {
+        assertTrue(filter().withinDateRange(LocalDate.of(1990, 1, 1)));
+
         values.put(MirrorConfig.KEY_COPY_FROM_DATE, "2026-10-15");
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals");
         final ArchiveFileFilterImpl filter = filter();
 
-        assertTrue(filter.select(Path.of("CPJ1.xml"), DAY).isPresent());
-        assertTrue(filter.select(Path.of("CPJ1.xml"), DAY.minusDays(1)).isEmpty());
-        assertTrue(filter.select(Path.of("Journals/j.pdf"), DAY.minusDays(1)).isEmpty());
-        assertTrue(filter.select(Path.of("Journals/j.pdf"), DAY.plusYears(1)).isPresent());
+        assertTrue(filter.withinDateRange(DAY));
+        assertTrue(filter.withinDateRange(DAY.plusYears(1)));
+        assertFalse(filter.withinDateRange(DAY.minusDays(1)));
     }
 }

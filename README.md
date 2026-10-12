@@ -32,11 +32,35 @@ There is one FastMirror per store PC, each with its own `.env`. FastMirror does 
 
 They go to `<PREFIX>\<year>\<month>\<date>\<name>` with `GROUP_BY=DATE`, or `<PREFIX>\<year>\<month>\<name>` with `GROUP_BY=MONTH`. The month is the English name in lower case (`october`) and the date is `2026-10-15`. The prefix folder is always upper case.
 
-**Files in a subfolder** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). There is no prefix filter for them. They go to `<subfolder>\<year>\<month>\<name>`, always grouped by month. Only files directly inside the subfolder are copied; folders nested deeper are ignored.
+**Files in other folders** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). An entry is either a folder inside the source folder (`Journals`) or a full path to a folder anywhere (`Z:/PassportReports`), so one agent can copy a POS that writes to two folders. There is no prefix filter for them; leave files out with `EXCLUDE_PATTERNS`. They go to `<folder name>\<year>\<month>\<name>`, always grouped by month. Only files directly inside the folder are copied; folders nested deeper are ignored.
 
-**The date** that picks the folder is the file's **creation time** in the Archive folder, as Windows reports it, in the PC's time zone. If POS Link moves a file into the Archive and Windows keeps its original creation time, that original date is used.
+**The date** that picks the folder comes from one of three places, set per store with `DATE_SOURCE`. The code is the same for every store; only `.env` differs. Ready-made files are in `packaging/env-examples/`.
 
-**`COPY_FROM_DATE`** (for example `2026-01-01`) limits copying to files created on or after that day. Left empty, everything already in the Archive is copied when the agent first starts.
+- `CONTENT` (recommended): the **business date written inside the file**, in the field(s) named by `CONTENT_DATE_FIELDS`, taken exactly as written. A report written at 00:09 on 1 October for business day 30 September goes to `september\2026-09-30`.
+- `FILENAME`: the **date written in the file name**, located with `FILENAME_DATE_PATTERN`.
+- `CREATED` (default): the file's **creation time**, converted to **`TIME_ZONE`** (default `America/New_York`).
+
+| POS | Business date inside the file | `.env` |
+|---|---|---|
+| Gilbarco Passport (Wolf) | `<BusinessDate>2026-09-22</BusinessDate>` in every report and journal | `CONTENT_DATE_FIELDS=BusinessDate` |
+| Verifone Sapphire (Tiki) | `periodEndDate="2025-10-04T23:45:06-04:00"` in reports; `<closedTime>` in the CPJ day journal | `CONTENT_DATE_FIELDS=periodEndDate,closedTime` |
+
+Passport names its files by when they were written, so a close just after midnight carries the next day's date in its name; only the content has the business date. For the CPJ, `closedTime` is named because its first `<date>` is the day before. Files with no business date inside (Passport acknowledgements and system messages, Verifone PJR live slices) fall back to their creation date and are named once in the log. The date is read once per file, from the first `CONTENT_SCAN_BYTES` (64 KB), through the same read-only open as the copy, once the file is stable.
+
+**PDFs and other files without a date inside** can be dated by the print time in their name plus `BUSINESS_DAY_STARTS_AT`. Passport's `StoreClose20260924000416.pdf` was printed at 00:04 on the 24th for business day 23 September; with `SUBFOLDER_FILENAME_DATE_PATTERN=*yyyyMMddHHmmss.pdf` and `BUSINESS_DAY_STARTS_AT=03:00` it is filed under the 23rd, and a 1 October 00:10 StoreClose stays in September. Checked against all 21 StoreClose and ShiftClose PDFs in the Wolf sample.
+
+`FILENAME` remains for stores whose names carry the business date:
+
+`FILENAME_DATE_PATTERN` is a template lined up against a real file name: `yyyy` or `yy` for the year, `MM` the month, `dd` the day, `?` any one character, `*` any number of characters.
+
+| Store's file names | Pattern | Date |
+|---|---|---|
+| `CPJ2026-09-13-590.xml` | `???yyyy-MM-dd*` | 2026-09-13 |
+| `FGM3402609230009241533201.xml` | `??????yyMMdd*` | 2026-09-23 |
+
+A file whose name does not fit the pattern, or whose digits are not a real date, falls back to its creation date and is named once in the log. Subfolder files have their own `SUBFOLDER_DATE_SOURCE` and `SUBFOLDER_FILENAME_DATE_PATTERN`.
+
+**`COPY_FROM_DATE`** (for example `2026-01-01`) limits copying to files whose date, as above, is on or after that day. Left empty, everything already in the Archive is copied when the agent first starts.
 
 **Same name, same folder:** the newer file overwrites the older copy.
 
@@ -106,18 +130,25 @@ INCLUDE_PREFIXES=CPJ,SUM,MCM,ISM,MSM,HRS,FGM,FCF,LYT,TPM
 
 Everything else has a working default. See `packaging/env.template` for the full list with explanations. Configuration is read once at startup; there is no hot reload.
 
-FastMirror refuses to start, with an explanatory message and exit code 1, if:
+FastMirror refuses to start, with a message box explaining why and exit code 1, if:
 
-- the source folder does not exist;
 - the mirror or state folder cannot be created or written;
 - two of the three folders overlap;
 - a prefix is not exactly 3 letters or digits;
 - `GROUP_BY` is not `DATE` or `MONTH`;
 - `COPY_FROM_DATE` is not a `yyyy-MM-dd` date;
+- `TIME_ZONE` is not a time zone name such as `America/New_York`;
+- `DATE_SOURCE=FILENAME` is set without a usable `FILENAME_DATE_PATTERN` (the same for the subfolder keys);
 - a number is out of range;
 - there is nothing to copy: no prefixes and no subfolders.
 
 If `INCLUDE_PREFIXES` is empty but `INCLUDE_SUBFOLDERS` is set, only subfolders are copied, and a warning says so.
+
+**Once started, FastMirror keeps running until you choose Exit from the tray, end it in Task Manager, log off, or restart the PC.** It never stops by itself:
+
+- If the source folder is not there at startup (a network drive or VM share not yet connected), it starts anyway, logs a warning, and begins copying when the folder appears.
+- If the source folder drops out while running, it logs that once, keeps checking every scan, and carries on when the folder comes back. Nothing is copied twice.
+- A failed copy is logged and retried on the next scan; it never stops the agent.
 
 Settings from FastMirror v2 that no longer exist (`SWEEP_INTERVAL_MS`, `CONTENT_VERIFY`, `PUBLISH_PARTIAL`, `MIRROR_EMPTY_DIRECTORIES`) produce a warning and are ignored.
 
@@ -207,7 +238,7 @@ All reading of Archive files is confined to `AtomicFileCopierImpl`. That is deli
 
 ### Test suite
 
-187 tests in the default run, 3 more under `slowTest`. The ones to understand first are in `ProducerNonInterferenceTest` — they are the executable form of the rule above, and a red run there blocks release regardless of everything else. `PosLinkArchiveIntegrationTest` covers the selection, layout, stability and ledger behaviour end to end.
+273 tests in the default run, 3 more under `slowTest`. The ones to understand first are in `ProducerNonInterferenceTest` — they are the executable form of the rule above, and a red run there blocks release regardless of everything else. `PosLinkArchiveIntegrationTest` covers the selection, layout, stability and ledger behaviour end to end.
 
 Two items cannot be verified off the store PC and are handed over unverified:
 

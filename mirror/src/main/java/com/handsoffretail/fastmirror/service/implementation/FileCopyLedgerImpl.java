@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * The ledger as a text file, {@code copied.ledger}, one line per copied file.
@@ -57,13 +58,24 @@ public final class FileCopyLedgerImpl implements CopyLedger {
      */
     public static FileCopyLedgerImpl open(Path stateFolder, Path sourceRoot, AppLogger logger)
             throws IOException {
-        Objects.requireNonNull(stateFolder, "stateFolder");
         Objects.requireNonNull(sourceRoot, "sourceRoot");
+        return open(stateFolder, relative -> sourceRoot.resolve(relative), logger);
+    }
+
+    /**
+     * @param toSource where a recorded file lives now, for dropping entries of files that are gone;
+     *                 normally {@code PathMapper::toSource}, which also knows folders outside the
+     *                 source root
+     */
+    public static FileCopyLedgerImpl open(
+            Path stateFolder, Function<Path, Path> toSource, AppLogger logger) throws IOException {
+        Objects.requireNonNull(stateFolder, "stateFolder");
+        Objects.requireNonNull(toSource, "toSource");
         Objects.requireNonNull(logger, "logger");
 
         final FileCopyLedgerImpl ledger =
                 new FileCopyLedgerImpl(stateFolder.resolve(FILE_NAME), logger);
-        ledger.load(sourceRoot);
+        ledger.load(toSource);
         return ledger;
     }
 
@@ -107,7 +119,7 @@ public final class FileCopyLedgerImpl implements CopyLedger {
         return file;
     }
 
-    private void load(Path sourceRoot) throws IOException {
+    private void load(Function<Path, Path> toSource) throws IOException {
         if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
             logger.info("No copy ledger yet; starting a new one at " + file);
             return;
@@ -128,17 +140,11 @@ public final class FileCopyLedgerImpl implements CopyLedger {
             }
         }
 
-        // If the source folder cannot be seen at all, every entry would look stale. Dropping them
-        // would make the agent copy everything again once the folder came back, so keep them.
         final List<LedgerKey> kept = new ArrayList<>(loaded.size());
-        if (Files.isDirectory(sourceRoot)) {
-            for (final LedgerKey key : loaded) {
-                if (Files.exists(sourceRoot.resolve(key.relativePath()), LinkOption.NOFOLLOW_LINKS)) {
-                    kept.add(key);
-                }
+        for (final LedgerKey key : loaded) {
+            if (stillPresentOrUnknown(key, toSource)) {
+                kept.add(key);
             }
-        } else {
-            kept.addAll(loaded);
         }
 
         entries.addAll(kept);
@@ -152,6 +158,25 @@ public final class FileCopyLedgerImpl implements CopyLedger {
                 "Copy ledger loaded: " + kept.size() + " file(s) already copied"
                         + (dropped > 0 ? ", " + dropped + " entr(ies) for files no longer in the source removed" : "")
                         + (malformed > 0 ? ", " + malformed + " unreadable line(s) skipped" : ""));
+    }
+
+    /**
+     * Whether to keep an entry: the file still exists, or its folder cannot be seen right now. A
+     * disconnected drive makes every entry look stale, and dropping them would make the agent copy
+     * everything again once the folder came back.
+     */
+    private static boolean stillPresentOrUnknown(LedgerKey key, Function<Path, Path> toSource) {
+        final Path source;
+        try {
+            source = toSource.apply(Path.of(key.relativePath()));
+        } catch (final RuntimeException e) {
+            return true;
+        }
+        final Path folder = source.getParent();
+        if (folder == null || !Files.isDirectory(folder)) {
+            return true;
+        }
+        return Files.exists(source, LinkOption.NOFOLLOW_LINKS);
     }
 
     private void rewrite(List<LedgerKey> kept) throws IOException {

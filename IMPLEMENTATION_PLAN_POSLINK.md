@@ -1,7 +1,7 @@
 # FastMirror v3 — POS Link Archive: Implementation Plan
 
 **Against:** FastMirror v2 (commit `50d8350`) and the requirements agreed on 2026-10-11
-**Status:** implemented 2026-10-11 (uncommitted). `gradlew build`: 187 tests pass. `gradlew slowTest`: 3 tests pass. See section 6 for where the build differed from this plan.
+**Status:** implemented 2026-10-11 (uncommitted). `gradlew build`: 273 tests pass. `gradlew slowTest`: 3 tests pass. See section 6 for where the build differed from this plan.
 **Scope:** one agent per store PC, each with its own `.env`. The agent now serves only the POS Link Archive.
 
 ## Locked decisions (from the Q&A)
@@ -14,7 +14,7 @@
 | 4 | Root files: selected by **3-letter prefix** (first 3 characters of the name, **case-insensitive**) and by **extension** (`INCLUDE_EXTENSIONS`, default `xml`). |
 | 5 | Root destination: `<PREFIX>/<yyyy>/<month>/<yyyy-MM-dd>/<original name>` with `GROUP_BY=DATE`, or `<PREFIX>/<yyyy>/<month>/<original name>` with `GROUP_BY=MONTH`. No weekly grouping. |
 | 6 | Month folder: lowercase English full name (`january` … `december`). Day folder: `yyyy-MM-dd`. Original file name kept. |
-| 7 | The date that decides the folder is the file's **original creation time** as Windows reports it, in the PC's local time zone. If POS Link moves a file into the Archive and Windows keeps its original creation time, that original date is used. |
+| 7 | The date that decides the folder is the file's **original creation time** as Windows reports it, converted to **`TIME_ZONE`** (default `America/New_York`, added 2026-10-11 because the agent may run on a VM or against a network drive in another zone). If POS Link moves a file into the Archive and Windows keeps its original creation time, that original date is used. |
 | 8 | Subfolders: `INCLUDE_SUBFOLDERS` key added now, empty by default. Files in an included subfolder are selected by `SUBFOLDER_EXTENSIONS` (default `pdf`), **with no prefix filter**, and are stored as `<subfolder>/<yyyy>/<month>/<original name>`, always grouped by month. |
 | 9 | A file with the same name in the same destination folder is **overwritten**. |
 | 10 | On first start, every matching file already in the Archive is copied, unless `COPY_FROM_DATE` limits the copy to files created on or after that date. |
@@ -224,4 +224,9 @@ About 1,000 lines of production code removed and about 700 added; about 1,500 te
 4. **The `.env` template now sets `INCLUDE_PREFIXES`**, and the agent requires prefixes or subfolders (D-2). The old two-key minimum no longer applies.
 5. **`jdk.unsupported` is no longer needed in the bundled runtime.** `jdeps` reports `java.base,java.desktop` only. README and `launch4j.xml` are updated.
 6. **Slow tests:** IT-13 (atomic visibility, 50 MB), IT-14 (5,000-file backlog, then no re-copy after a restart) and IT-16 (soak) were kept and adapted. IT-15 measured instant-capture latency and was dropped.
-7. **Phases were not committed one by one.** Everything is in the working tree, uncommitted, for review.
+7. **Phases were not committed one by one.** Everything was committed as one commit on branch `poslink-archive`.
+8. **`TIME_ZONE` added after review** (default `America/New_York`). The PC's own time zone no longer affects date folders or `COPY_FROM_DATE`. Log timestamps still use the PC's clock.
+9. **Date from the file name, configurable per store** (added 2026-10-11). `DATE_SOURCE=FILENAME` with a template such as `FILENAME_DATE_PATTERN=???yyyy-MM-dd*` reads the business date from names like `CPJ2026-09-13-590.xml`, so late files land in their own month. A name without a date falls back to the creation date with one warning per file. Subfolder files have their own `SUBFOLDER_DATE_SOURCE` and `SUBFOLDER_FILENAME_DATE_PATTERN`. `COPY_FROM_DATE` uses the same date.
+10. **The agent keeps running until stopped by hand.** A missing source folder at startup is a warning, not an error. Source outages are logged once and ridden out. A real `.env` mistake shows a message box before the agent exits.
+11. **Business date from inside the file** (`DATE_SOURCE=CONTENT`, 2026-10-12). One code path for both POS types; the store is chosen by `.env` alone (`packaging/env-examples/`). Passport: `CONTENT_DATE_FIELDS=BusinessDate` (its file names carry the write date, a day late after a midnight close). Verifone: `periodEndDate,closedTime` (CPJ's first `<date>` is the day before). Dates are taken as written, never converted. The start of a stable file is read once via the copier's read-only open (the only class that opens source files) and the result is remembered, so files outside `COPY_FROM_DATE` are not re-read every scan. Verified against all 24 real sample files.
+12. **A second source folder, and PDFs dated by print time** (2026-10-12). Passport writes XML to `Z:\BOOutBox` and PDFs to `Z:\PassportReports`. `INCLUDE_SUBFOLDERS` now accepts a full path, so one agent copies both; files there are identified as `<folder name>/<file>` throughout (selection, layout, ledger), and the ledger keeps entries whose folder is offline. PDFs have no readable date inside, so `SUBFOLDER_FILENAME_DATE_PATTERN=*yyyyMMddHHmmss.pdf` reads the print time and `BUSINESS_DAY_STARTS_AT=03:00` moves after-midnight prints to the previous day (never applied to content dates). UNREADEMAIL is left out with `EXCLUDE_PATTERNS`. One agent rather than two, because two agents sharing a mirror would delete each other's staging files at startup. Verified on all 28 real PDF names: the 7 StoreClose land on business days 22-28 Sept as in the reconcile table.
