@@ -1,30 +1,34 @@
 package com.handsoffretail.fastmirror;
 
 import com.handsoffretail.fastmirror.config.ConfigException;
+import com.handsoffretail.fastmirror.config.ContentDateFields;
 import com.handsoffretail.fastmirror.config.EnvFileReader;
+import com.handsoffretail.fastmirror.config.FileNameDatePattern;
 import com.handsoffretail.fastmirror.config.MirrorConfig;
+import com.handsoffretail.fastmirror.entity.DateSource;
 import com.handsoffretail.fastmirror.logging.AppLogger;
+import com.handsoffretail.fastmirror.service.ArchiveFileFilter;
 import com.handsoffretail.fastmirror.service.CopyQueue;
-import com.handsoffretail.fastmirror.service.DifferenceDetector;
 import com.handsoffretail.fastmirror.service.FileCopier;
-import com.handsoffretail.fastmirror.service.MirrorService;
-import com.handsoffretail.fastmirror.service.PathFilter;
+import com.handsoffretail.fastmirror.service.FileDateResolver;
 import com.handsoffretail.fastmirror.service.PathMapper;
-import com.handsoffretail.fastmirror.service.SourceWatcherService;
+import com.handsoffretail.fastmirror.service.ScanService;
+import com.handsoffretail.fastmirror.service.StabilityTracker;
 import com.handsoffretail.fastmirror.service.StatsReporter;
-import com.handsoffretail.fastmirror.service.SweepService;
 import com.handsoffretail.fastmirror.service.TrayService;
+import com.handsoffretail.fastmirror.service.implementation.ArchiveFileFilterImpl;
+import com.handsoffretail.fastmirror.service.implementation.ArchiveScanServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.AtomicFileCopierImpl;
 import com.handsoffretail.fastmirror.service.implementation.CopyQueueImpl;
+import com.handsoffretail.fastmirror.service.implementation.FileCopyLedgerImpl;
+import com.handsoffretail.fastmirror.service.implementation.FileDateResolverImpl;
 import com.handsoffretail.fastmirror.service.implementation.GlobPathFilterImpl;
+import com.handsoffretail.fastmirror.service.implementation.GroupedPathMapperImpl;
 import com.handsoffretail.fastmirror.service.implementation.LoggingStatsReporterImpl;
-import com.handsoffretail.fastmirror.service.implementation.MirrorServiceImpl;
-import com.handsoffretail.fastmirror.service.implementation.RelativePathMapperImpl;
-import com.handsoffretail.fastmirror.service.implementation.SizeAndTimeDifferenceDetectorImpl;
+import com.handsoffretail.fastmirror.service.implementation.StabilityTrackerImpl;
 import com.handsoffretail.fastmirror.service.implementation.SystemTrayServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.ThreadSleeperImpl;
-import com.handsoffretail.fastmirror.service.implementation.TreeSweepServiceImpl;
-import com.handsoffretail.fastmirror.service.implementation.WatchServiceSourceWatcherImpl;
+import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.FileVisitResult;
@@ -40,23 +44,19 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.swing.JFrame;
+import javax.swing.JOptionPane;
 
 /**
- * The composition root (AR-6): construction, wiring and startup ordering, and nothing else.
+ * The composition root: construction, wiring and startup ordering, and nothing else.
  *
  * <p>Every decision about <em>what</em> FastMirror does lives in a service. This class only decides
- * what is built, in what order it starts, and in what order it stops. A reviewer should be able to
- * confirm at a glance that no rule of SRS 5.1 could possibly be violated here, because nothing here
- * touches a file in the source folder.
- *
- * <p>The startup order is load-bearing, not cosmetic. The watcher starts <em>before</em> the first
- * sweep (FR-13) so that a file created while the sweep is walking still raises an event; the other
- * way round, files appearing in that window would be missed by both.
+ * what is built, in what order it starts, and in what order it stops. Nothing here touches a file
+ * in the source folder.
  */
 public final class Application {
 
     private static final int EXIT_CONFIG_ERROR = 1;
-    private static final int EXIT_WATCH_FAILURE = 2;
 
     private static final Duration COPY_SHUTDOWN_GRACE = Duration.ofSeconds(5);
 
@@ -70,32 +70,33 @@ public final class Application {
         final Clock clock = Clock.systemDefaultZone();
 
         // 1. Logging first, so that every later failure has somewhere to be reported. The agent
-        //    runs windowless in production (FR-24), so a stack trace on a console nobody sees is
-        //    the same as no report at all.
+        //    runs windowless in production, so a stack trace on a console nobody sees is the same
+        //    as no report at all.
         final AppLogger logger = new AppLogger(resolveLogFolder(env, baseDirectory), clock);
 
-        // 2. Nothing may die silently on any thread (NFR-07).
+        // 2. Nothing may die silently on any thread.
         Thread.setDefaultUncaughtExceptionHandler(
                 (thread, error) -> logger.error("Uncaught exception on " + thread.getName(), error));
 
-        // 3. Configuration, validated (SRS 7.3).
+        // 3. Configuration, validated, then the ledger and everything else.
         final MirrorConfig config;
+        final Handle handle;
         try {
             config = MirrorConfig.load(env::get, baseDirectory);
+            handle = start(config, logger, clock);
         } catch (final ConfigException e) {
             logger.error("Configuration error: " + e.getMessage());
             System.err.println("FastMirror configuration error: " + e.getMessage());
             logger.close();
+            showStartupError(e.getMessage());
             System.exit(EXIT_CONFIG_ERROR);
             return;
         }
 
-        final Handle handle = start(config, logger, clock);
-
-        // 11. The tray icon: a startup notification saying where files are copied from and to, a
-        //     visible sign the agent is running, and an Exit button (SRS 9.11). Wired here in main
-        //     rather than in start(), so tests and headless runs never create one. Exit stops the
-        //     agent and ends the process; the shutdown hook below then removes the icon.
+        // 10. The tray icon: a startup notification saying where files are copied from and to, a
+        //     visible sign the agent is running, and an Exit button. Wired here in main rather
+        //     than in start(), so tests and headless runs never create one. Exit stops the agent
+        //     and ends the process; the shutdown hook below then removes the icon.
         final TrayService tray =
                 new SystemTrayServiceImpl(
                         config,
@@ -121,94 +122,105 @@ public final class Application {
     }
 
     /**
-     * Builds the object graph and starts it in the order of SRS 9.2.
+     * Builds the object graph and starts it.
      *
      * <p>Exposed so that integration tests exercise the real wiring and the real startup order
      * rather than a parallel copy of it that could drift out of step.
+     *
+     * @param clock wall-clock time, which drives the stability wait and the creation-date grouping;
+     *              tests pass a clock they can move forward
+     * @throws ConfigException if the copy ledger cannot be read
      */
     public static Handle start(MirrorConfig config, AppLogger logger, Clock clock) {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(logger, "logger");
         Objects.requireNonNull(clock, "clock");
 
-        // 4. Remove staging files left behind by a previous run (FR-22).
+        for (final String warning : config.warnings()) {
+            logger.warn("Configuration: " + warning);
+        }
+
+        // 4. Remove staging files left behind by a previous run.
         deleteStaleStagingFiles(config, logger);
 
-        // 5. Construct. Constructor injection only; every dependency is final (AR-4, AR-5).
-        final PathMapper mapper = new RelativePathMapperImpl(config.sourceFolder(), config.mirrorFolder());
-        final PathFilter filter = new GlobPathFilterImpl(config.excludePatterns());
+        // 5. The ledger of files already copied, compacted.
+        final PathMapper mapper =
+                new GroupedPathMapperImpl(
+                        config.sourceFolder(), config.mirrorFolder(), config.externalSubfolders());
+        final FileCopyLedgerImpl ledger;
+        try {
+            ledger = FileCopyLedgerImpl.open(config.stateFolder(), mapper::toSource, logger);
+        } catch (final IOException e) {
+            throw new ConfigException(
+                    "The copy ledger in " + config.stateFolder() + " could not be read ("
+                            + e.getMessage() + "). Check the folder's permissions.", e);
+        }
+
+        // 6. Construct. Constructor injection only; every dependency is final.
+        final ArchiveFileFilter filter =
+                new ArchiveFileFilterImpl(config, new GlobPathFilterImpl(config.excludePatterns()));
         final StatsReporter stats = new LoggingStatsReporterImpl(logger, config.statsIntervalMs());
         final FileCopier copier =
                 new AtomicFileCopierImpl(config, mapper, new ThreadSleeperImpl(), logger, clock);
-        final DifferenceDetector detector =
-                new SizeAndTimeDifferenceDetectorImpl(mapper, copier, config.contentVerify());
+        final CopyQueue queue = new CopyQueueImpl(copier, ledger, stats, logger, config.copyWorkers());
+        final FileDateResolver dates = new FileDateResolverImpl(config, copier, logger);
+        final StabilityTracker tracker =
+                new StabilityTrackerImpl(Duration.ofMinutes(config.stabilityMinutes()), clock);
+        final ScanService scanner =
+                new ArchiveScanServiceImpl(config, mapper, filter, dates, tracker, ledger, queue, logger);
 
-        // 6. The worker pool exists as soon as the queue does.
-        final CopyQueue queue =
-                new CopyQueueImpl(detector, copier, stats, logger, config.copyWorkers());
+        final Handle handle = new Handle(config, logger, queue, scanner, stats);
 
-        final SweepService sweeper =
-                new TreeSweepServiceImpl(config, mapper, filter, detector, queue, logger);
-        final MirrorService mirrorService =
-                new MirrorServiceImpl(config, mapper, filter, queue, sweeper, logger);
+        // 7. The first scan starts every file's stability clock. Nothing is copied before the
+        //    stability period has passed, not even files that were already there.
+        scanner.scan();
 
-        final Handle handle = new Handle(config, logger, queue, sweeper, mirrorService, stats);
-
-        final SourceWatcherService watcher =
-                new WatchServiceSourceWatcherImpl(
-                        config, mirrorService, logger, failure -> handle.fail(EXIT_WATCH_FAILURE));
-        handle.attach(watcher);
-
-        // 7. Watcher and event thread BEFORE the sweep (FR-13), so nothing created during the
-        //    sweep falls between the two.
-        mirrorService.start();
-        watcher.start();
-
-        // 8. Bring the mirror into line with whatever is already on disk.
-        sweeper.sweep();
-
-        // 9. Periodic safety net and periodic reporting.
-        sweeper.start();
+        // 8. Periodic scanning and periodic reporting.
+        scanner.start();
         handle.startStatsReporting();
 
-        // 10.
+        // 9.
         logger.info(
                 "FastMirror started: " + config.sourceFolder() + " -> " + config.mirrorFolder()
-                        + " (workers=" + config.copyWorkers()
-                        + ", sweep=" + (config.sweepEnabled() ? config.sweepIntervalMs() + "ms" : "off")
-                        + ", publishPartial=" + config.publishPartial() + ")");
+                        + " (prefixes=" + String.join(",", config.includePrefixes())
+                        + " ." + String.join(",.", config.includeExtensions())
+                        + ", groupBy=" + config.groupBy()
+                        + (config.includeSubfolders().isEmpty()
+                                ? ""
+                                : ", subfolders=" + String.join(",", config.includeSubfolders())
+                                        + " ." + String.join(",.", config.subfolderExtensions()))
+                        + (config.copyFromDate() == null ? "" : ", from=" + config.copyFromDate())
+                        + ", date from " + describeDateSource(config)
+                        + ", stable after " + config.stabilityMinutes() + " min"
+                        + ", scan every " + config.scanIntervalSeconds() + "s"
+                        + ", workers=" + config.copyWorkers()
+                        + ", ledger=" + ledger.file() + ")");
 
         return handle;
     }
 
-    /** The running agent: what to stop, and in what order (SRS 9.10). */
+    /** The running agent: what to stop, and in what order. */
     public static final class Handle {
 
         private final MirrorConfig config;
         private final AppLogger logger;
         private final CopyQueue queue;
-        private final SweepService sweeper;
-        private final MirrorService mirrorService;
+        private final ScanService scanner;
         private final StatsReporter stats;
         private final ScheduledExecutorService statsScheduler;
         private final CountDownLatch stopped = new CountDownLatch(1);
         private final AtomicBoolean stopping = new AtomicBoolean();
 
-        private volatile SourceWatcherService watcher;
-        private volatile int exitCode;
-
         private Handle(
                 MirrorConfig config,
                 AppLogger logger,
                 CopyQueue queue,
-                SweepService sweeper,
-                MirrorService mirrorService,
+                ScanService scanner,
                 StatsReporter stats) {
             this.config = config;
             this.logger = logger;
             this.queue = queue;
-            this.sweeper = sweeper;
-            this.mirrorService = mirrorService;
+            this.scanner = scanner;
             this.stats = stats;
             this.statsScheduler =
                     Executors.newSingleThreadScheduledExecutor(
@@ -217,10 +229,6 @@ public final class Application {
                                 thread.setDaemon(true);
                                 return thread;
                             });
-        }
-
-        private void attach(SourceWatcherService watcher) {
-            this.watcher = watcher;
         }
 
         private void startStatsReporting() {
@@ -251,7 +259,7 @@ public final class Application {
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            System.exit(exitCode);
+            System.exit(0);
         }
 
         /** The queue, so integration tests can wait for quiescence rather than for a clock. */
@@ -259,33 +267,24 @@ public final class Application {
             return queue;
         }
 
-        /** The counters, so integration tests and the soak run can read the outcomes. */
+        /** The counters, so integration tests can read the outcomes. */
         public StatsReporter stats() {
             return stats;
         }
 
-        /** Runs one sweep on the calling thread. */
-        public void sweepNow() {
-            sweeper.sweep();
+        /** Runs one scan on the calling thread. */
+        public void scanNow() {
+            scanner.scan();
         }
 
-        private void fail(int code) {
-            exitCode = code;
-            stop();
-        }
-
-        /** Stops everything in the reverse of the order it started (SRS 9.10). */
+        /** Stops everything in the reverse of the order it started. */
         public void stop() {
             if (!stopping.compareAndSet(false, true)) {
                 return;
             }
             try {
                 statsScheduler.shutdownNow();
-                if (watcher != null) {
-                    watcher.stop();
-                }
-                mirrorService.stop();
-                sweeper.stop();
+                scanner.stop();
 
                 // In-flight copies get a grace period. Each one holds a handle on a producer file,
                 // and letting it finish releases that handle in an orderly way.
@@ -305,7 +304,37 @@ public final class Application {
 
     // ---------------------------------------------------------------- private wiring helpers
 
-    /** FR-17 and FR-22: the only files FastMirror ever deletes are its own staging files. */
+    private static String describeDateSource(MirrorConfig config) {
+        final String root =
+                describe(
+                        config.dateSource(),
+                        config.fileNameDatePattern(),
+                        config.contentDateFields(),
+                        config);
+        if (config.includeSubfolders().isEmpty()) {
+            return root;
+        }
+        return root + ", subfolders: "
+                + describe(
+                        config.subfolderDateSource(),
+                        config.subfolderFileNameDatePattern(),
+                        config.subfolderContentDateFields(),
+                        config);
+    }
+
+    private static String describe(
+            DateSource source,
+            FileNameDatePattern pattern,
+            ContentDateFields fields,
+            MirrorConfig config) {
+        return switch (source) {
+            case CREATED -> "creation time (" + config.timeZone() + ")";
+            case FILENAME -> "file name " + pattern;
+            case CONTENT -> "content field " + fields;
+        };
+    }
+
+    /** The only files FastMirror ever deletes are its own staging files. */
     private static void deleteStaleStagingFiles(MirrorConfig config, AppLogger logger) {
         final int[] removed = {0};
         try {
@@ -335,6 +364,35 @@ public final class Application {
         }
         if (removed[0] > 0) {
             logger.info("Removed " + removed[0] + " stale staging file(s)");
+        }
+    }
+
+    /**
+     * The exe has no console, so without this a mistake in .env would make the agent vanish with
+     * the reason only in the log. Skipped where there is no desktop, such as a Windows service.
+     */
+    private static void showStartupError(String message) {
+        if (GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+        try {
+            final JFrame owner = new JFrame();
+            owner.setUndecorated(true);
+            owner.setAlwaysOnTop(true);
+            owner.setLocationRelativeTo(null);
+            owner.setVisible(true);
+            try {
+                JOptionPane.showMessageDialog(
+                        owner,
+                        "FastMirror could not start.\n\n" + message
+                                + "\n\nCorrect .env beside FastMirror.exe and start it again.",
+                        "FastMirror",
+                        JOptionPane.ERROR_MESSAGE);
+            } finally {
+                owner.dispose();
+            }
+        } catch (final RuntimeException e) {
+            // No usable desktop after all; the log line already says what went wrong.
         }
     }
 

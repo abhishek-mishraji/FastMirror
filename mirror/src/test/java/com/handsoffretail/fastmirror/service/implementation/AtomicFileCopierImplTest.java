@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.handsoffretail.fastmirror.config.MirrorConfig;
+import com.handsoffretail.fastmirror.entity.CopyJob;
 import com.handsoffretail.fastmirror.entity.CopyOutcome;
 import com.handsoffretail.fastmirror.entity.CopyResult;
+import com.handsoffretail.fastmirror.entity.LedgerKey;
 import com.handsoffretail.fastmirror.logging.AppLogger;
 import com.handsoffretail.fastmirror.service.FileCopier;
 import com.handsoffretail.fastmirror.service.PathMapper;
@@ -60,11 +62,12 @@ class AtomicFileCopierImplTest {
     @BeforeEach
     void setUp() {
         logger = new AppLogger(logFolder, CLOCK);
-        mapper = new RelativePathMapperImpl(sourceRoot, mirrorRoot);
+        mapper = new GroupedPathMapperImpl(sourceRoot, mirrorRoot);
         sleeper = new RecordingSleeper();
         values = new HashMap<>();
         values.put(MirrorConfig.KEY_SOURCE_FOLDER, sourceRoot.toString());
         values.put(MirrorConfig.KEY_MIRROR_FOLDER, mirrorRoot.toString());
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, "CPJ");
     }
 
     @AfterEach
@@ -99,6 +102,15 @@ class AtomicFileCopierImplTest {
         return data;
     }
 
+    /** A job whose target has the same relative path as its source, to keep assertions simple. */
+    private static CopyJob job(Path relative) {
+        return new CopyJob(relative, relative, LedgerKey.of(relative, 0L, 0L));
+    }
+
+    private static CopyJob job(String relative) {
+        return job(Path.of(relative));
+    }
+
     private List<String> mirrorNames() throws IOException {
         final List<String> names = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(mirrorRoot)) {
@@ -117,7 +129,7 @@ class AtomicFileCopierImplTest {
         final byte[] content = bytes(4096);
         writeSource("PJR9.xml", content);
 
-        final CopyResult result = copier().copy(Path.of("PJR9.xml"), System.nanoTime(), true);
+        final CopyResult result = copier().copy(job(Path.of("PJR9.xml")));
 
         assertEquals(CopyOutcome.COPIED, result.outcome());
         assertEquals(4096L, result.bytesCopied());
@@ -130,7 +142,7 @@ class AtomicFileCopierImplTest {
         Files.write(mirrorRoot.resolve("a.xml"), "old".getBytes(StandardCharsets.UTF_8));
         writeSource("a.xml", "new content".getBytes(StandardCharsets.UTF_8));
 
-        final CopyResult result = copier().copy(Path.of("a.xml"), System.nanoTime(), false);
+        final CopyResult result = copier().copy(job(Path.of("a.xml")));
 
         assertEquals(CopyOutcome.REPLACED, result.outcome());
         assertEquals(
@@ -143,30 +155,30 @@ class AtomicFileCopierImplTest {
     void preservesNestedStructure() throws Exception {
         writeSource("s1/s2/r.xml", bytes(128));
 
-        final CopyResult result = copier().copy(Path.of("s1", "s2", "r.xml"), System.nanoTime(), true);
+        final CopyResult result = copier().copy(job(Path.of("s1", "s2", "r.xml")));
 
         assertEquals(CopyOutcome.COPIED, result.outcome());
         assertTrue(Files.isRegularFile(mirrorRoot.resolve("s1").resolve("s2").resolve("r.xml")));
     }
 
     @Test
-    @DisplayName("UT-15: the target's last-modified time equals the source's")
+    @DisplayName("the target's last-modified time equals the source's")
     void ut15_stampsSourceTimestamp() throws Exception {
         final Path source = writeSource("t.xml", bytes(64));
         final FileTime expected = FileTime.from(Instant.parse("2026-09-19T08:30:15Z"));
         Files.setLastModifiedTime(source, expected);
 
-        copier().copy(Path.of("t.xml"), System.nanoTime(), true);
+        copier().copy(job(Path.of("t.xml")));
 
         assertEquals(expected, Files.getLastModifiedTime(mirrorRoot.resolve("t.xml")));
     }
 
     @Test
-    @DisplayName("UT-16: no staging file is left behind after a successful copy")
+    @DisplayName("no staging file is left behind after a successful copy")
     void ut16_noStagingAfterSuccess() throws Exception {
         writeSource("clean.xml", bytes(2048));
 
-        copier().copy(Path.of("clean.xml"), System.nanoTime(), true);
+        copier().copy(job(Path.of("clean.xml")));
 
         assertEquals(List.of("clean.xml"), mirrorNames());
     }
@@ -177,7 +189,7 @@ class AtomicFileCopierImplTest {
         values.put(MirrorConfig.KEY_MAX_COPY_BYTES, "100");
         writeSource("big.xml", bytes(101));
 
-        final CopyResult result = copier().copy(Path.of("big.xml"), System.nanoTime(), true);
+        final CopyResult result = copier().copy(job(Path.of("big.xml")));
 
         assertEquals(CopyOutcome.SKIPPED_TOO_LARGE, result.outcome());
         assertTrue(mirrorNames().isEmpty(), "nothing should be published, not even a staging file");
@@ -186,17 +198,16 @@ class AtomicFileCopierImplTest {
     // ------------------------------------------------------------------ vanished and locked
 
     @Test
-    @DisplayName("FR-11: a source that is already gone is VANISHED, with no retry")
+    @DisplayName("a source that is already gone is VANISHED, with no retry")
     void vanishedSourceIsNotRetried() {
-        final CopyResult result = copier().copy(Path.of("ghost.xml"), System.nanoTime(), true);
+        final CopyResult result = copier().copy(job(Path.of("ghost.xml")));
 
         assertEquals(CopyOutcome.VANISHED, result.outcome());
-        assertTrue(result.wasOpened() == false || result.captureLatencyMs() >= 0L);
-        assertTrue(sleeper.delays.isEmpty(), "NI-11: a vanished file must never be retried");
+        assertTrue(sleeper.delays.isEmpty(), "a vanished file must never be retried");
     }
 
     @Test
-    @DisplayName("FR-10: an unopenable source is retried with doubling backoff, then LOCKED")
+    @DisplayName("an unopenable source is retried with doubling backoff, then LOCKED")
     void lockedSourceRetriesWithBackoff() throws Exception {
         writeSource("locked.xml", bytes(16));
         values.put(MirrorConfig.KEY_OPEN_RETRY_ATTEMPTS, "3");
@@ -207,7 +218,7 @@ class AtomicFileCopierImplTest {
                                 source -> {
                                     throw new java.nio.file.AccessDeniedException(source.toString());
                                 })
-                        .copy(Path.of("locked.xml"), System.nanoTime(), true);
+                        .copy(job(Path.of("locked.xml")));
 
         assertEquals(CopyOutcome.LOCKED, result.outcome());
         assertEquals(List.of(5L, 10L, 20L), sleeper.delays, "backoff should double per attempt");
@@ -228,13 +239,13 @@ class AtomicFileCopierImplTest {
                                     }
                                     return Files.newByteChannel(source, java.nio.file.StandardOpenOption.READ);
                                 })
-                        .copy(Path.of("flaky.xml"), System.nanoTime(), true);
+                        .copy(job(Path.of("flaky.xml")));
 
         assertEquals(CopyOutcome.COPIED, result.outcome());
         assertArrayEquals(content, Files.readAllBytes(mirrorRoot.resolve("flaky.xml")));
     }
 
-    // ------------------------------------------------------------------ UT-17 / UT-18 partial
+    // ------------------------------------------------------------------ failed reads
 
     /** A channel that serves {@code failAfter} bytes and then fails, simulating a mid-read fault. */
     private static final class FailingChannel implements SeekableByteChannel {
@@ -297,60 +308,42 @@ class AtomicFileCopierImplTest {
     }
 
     @Test
-    @DisplayName("UT-17: a read that fails part-way publishes exactly the bytes captured")
-    void ut17_publishesCapturedPrefix() throws Exception {
+    @DisplayName("a read that fails part-way publishes nothing and reports FAILED")
+    void failedReadPublishesNothing() throws Exception {
         final byte[] content = bytes(10_000);
         writeSource("partial.xml", content);
 
         final CopyResult result =
-                copierWith(source -> new FailingChannel(content, 3_000))
-                        .copy(Path.of("partial.xml"), System.nanoTime(), true);
+                copierWith(source -> new FailingChannel(content, 3_000)).copy(job("partial.xml"));
 
-        assertEquals(CopyOutcome.PARTIAL, result.outcome());
-        assertEquals(3_000L, result.bytesCopied());
-        assertEquals(10_000L, result.expectedBytes());
-
-        final byte[] published = Files.readAllBytes(mirrorRoot.resolve("partial.xml"));
-        assertEquals(3_000, published.length);
-        assertArrayEquals(java.util.Arrays.copyOf(content, 3_000), published);
+        assertEquals(CopyOutcome.FAILED, result.outcome());
+        assertEquals(0L, result.bytesCopied());
+        assertTrue(
+                mirrorNames().isEmpty(),
+                "a truncated file must never be published, and no staging file may be left");
     }
 
     @Test
-    @DisplayName("UT-17b: the partial is published atomically, leaving no staging file")
-    void ut17b_partialLeavesNoStaging() throws Exception {
-        final byte[] content = bytes(8_192);
-        writeSource("partial2.xml", content);
-
-        copierWith(source -> new FailingChannel(content, 1_000))
-                .copy(Path.of("partial2.xml"), System.nanoTime(), true);
-
-        assertEquals(List.of("partial2.xml"), mirrorNames());
-    }
-
-    @Test
-    @DisplayName("UT-18: a read that fails with nothing captured publishes nothing")
-    void ut18_zeroBytesPublishesNothing() throws Exception {
+    @DisplayName("a read that fails with nothing captured publishes nothing")
+    void zeroBytesPublishesNothing() throws Exception {
         final byte[] content = bytes(5_000);
         writeSource("nothing.xml", content);
 
         final CopyResult result =
-                copierWith(source -> new FailingChannel(content, 0))
-                        .copy(Path.of("nothing.xml"), System.nanoTime(), true);
+                copierWith(source -> new FailingChannel(content, 0)).copy(job("nothing.xml"));
 
         assertEquals(CopyOutcome.FAILED, result.outcome());
-        assertEquals(0L, result.bytesCopied());
-        assertTrue(mirrorNames().isEmpty(), "UT-16: no staging file may be left behind on failure");
+        assertTrue(mirrorNames().isEmpty(), "no staging file may be left behind on failure");
     }
 
     @Test
-    @DisplayName("UT-18b: a zero-byte failure never overwrites a good existing target")
-    void ut18b_doesNotDestroyGoodTarget() throws Exception {
+    @DisplayName("a failed read never overwrites a good existing target")
+    void failedReadDoesNotDestroyGoodTarget() throws Exception {
         Files.write(mirrorRoot.resolve("keep.xml"), "the good copy".getBytes(StandardCharsets.UTF_8));
         final byte[] content = bytes(5_000);
         writeSource("keep.xml", content);
 
-        copierWith(source -> new FailingChannel(content, 0))
-                .copy(Path.of("keep.xml"), System.nanoTime(), false);
+        copierWith(source -> new FailingChannel(content, 2_000)).copy(job("keep.xml"));
 
         assertEquals(
                 "the good copy",
@@ -358,21 +351,20 @@ class AtomicFileCopierImplTest {
     }
 
     @Test
-    @DisplayName("PUBLISH_PARTIAL=false restores the stricter discard behaviour")
-    void publishPartialFalseDiscards() throws Exception {
-        values.put(MirrorConfig.KEY_PUBLISH_PARTIAL, "false");
-        final byte[] content = bytes(4_000);
-        writeSource("discard.xml", content);
+    @DisplayName("the target goes to the job's grouped folder, which is created on demand")
+    void copiesIntoGroupedFolder() throws Exception {
+        final byte[] content = bytes(100);
+        writeSource("CPJ432.xml", content);
+        final Path target = Path.of("CPJ", "2026", "october", "2026-10-15", "CPJ432.xml");
 
         final CopyResult result =
-                copierWith(source -> new FailingChannel(content, 1_500))
-                        .copy(Path.of("discard.xml"), System.nanoTime(), true);
+                copier().copy(new CopyJob(Path.of("CPJ432.xml"), target, LedgerKey.of(Path.of("CPJ432.xml"), 1L, 100L)));
 
-        assertEquals(CopyOutcome.FAILED, result.outcome());
-        assertTrue(mirrorNames().isEmpty(), "nothing should be published when partials are disabled");
+        assertEquals(CopyOutcome.COPIED, result.outcome());
+        assertArrayEquals(content, Files.readAllBytes(mirrorRoot.resolve(target)));
     }
 
-    // ------------------------------------------------------------------ CONTENT_VERIFY
+    // ------------------------------------------------------------------ concurrency and consumers
 
     @Test
     @DisplayName("concurrent copies of one path never destroy each other's staging file")
@@ -399,7 +391,7 @@ class AtomicFileCopierImplTest {
                                     startLine.await(10, java.util.concurrent.TimeUnit.SECONDS);
                                     for (int c = 0; c < copiesPerThread; c++) {
                                         results.add(
-                                                copier.copy(Path.of("contended.xml"), System.nanoTime(), false));
+                                                copier.copy(job(Path.of("contended.xml"))));
                                     }
                                 } catch (final InterruptedException e) {
                                     Thread.currentThread().interrupt();
@@ -434,7 +426,7 @@ class AtomicFileCopierImplTest {
     @Test
     @DisplayName("a consumer holding the target open does not cost us the copy")
     void publishSurvivesAConsumerHoldingTheTarget() throws Exception {
-        // The real scenario, not a hypothetical: in production the HOR AWS Sync Agent reads files
+        // The real scenario, not a hypothetical: in production the S3 upload agent reads files
         // out of the mirror folder to upload them, so it can have a target open at the exact moment
         // FastMirror tries to replace it. Windows fails that move with AccessDeniedException.
         // Losing a copy over a collision we fully expect would be a poor trade, so publish retries.
@@ -442,7 +434,7 @@ class AtomicFileCopierImplTest {
         final byte[] second = bytes(2048);
         writeSource("consumed.xml", first);
         final FileCopier copier = copier();
-        assertEquals(CopyOutcome.COPIED, copier.copy(Path.of("consumed.xml"), System.nanoTime(), true).outcome());
+        assertEquals(CopyOutcome.COPIED, copier.copy(job(Path.of("consumed.xml"))).outcome());
 
         // A separate process opens the mirrored file with FileShare.None, as a consumer might.
         final Path target = mirrorRoot.resolve("consumed.xml");
@@ -456,7 +448,7 @@ class AtomicFileCopierImplTest {
         Thread.sleep(120L);
 
         writeSource("consumed.xml", second);
-        final CopyResult result = copier.copy(Path.of("consumed.xml"), System.nanoTime(), false);
+        final CopyResult result = copier.copy(job(Path.of("consumed.xml")));
         holder.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
 
         assertEquals(
@@ -465,26 +457,5 @@ class AtomicFileCopierImplTest {
                 "the copy must survive the consumer's hold, cause: " + result.cause());
         assertArrayEquals(second, Files.readAllBytes(target));
         assertEquals(List.of("consumed.xml"), mirrorNames(), "no staging file left behind");
-    }
-
-    @Test
-    @DisplayName("contentsDiffer compares the actual bytes")
-    void contentsDifferComparesBytes() throws Exception {
-        writeSource("h.xml", "identical".getBytes(StandardCharsets.UTF_8));
-        Files.write(mirrorRoot.resolve("h.xml"), "identical".getBytes(StandardCharsets.UTF_8));
-
-        assertFalse(copier().contentsDiffer(Path.of("h.xml")));
-
-        Files.write(mirrorRoot.resolve("h.xml"), "different".getBytes(StandardCharsets.UTF_8));
-
-        assertTrue(copier().contentsDiffer(Path.of("h.xml")));
-    }
-
-    @Test
-    @DisplayName("contentsDiffer treats an unreadable side as different, so the copy is attempted")
-    void contentsDifferOnMissingTarget() throws Exception {
-        writeSource("only-source.xml", bytes(10));
-
-        assertTrue(copier().contentsDiffer(Path.of("only-source.xml")));
     }
 }

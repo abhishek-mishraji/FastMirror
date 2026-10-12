@@ -93,11 +93,15 @@ class ProducerNonInterferenceTest {
     void it18b_rapidCreateDeleteNeverFailsTheProducer() throws Exception {
         try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
             for (int i = 0; i < CYCLES; i++) {
-                final Path file = sourceRoot.resolve("burst-" + i + ".xml");
+                final Path file = sourceRoot.resolve("CPJburst-" + i + ".xml");
                 final int index = i;
                 producerDid(
                         "create burst-" + index,
                         () -> Files.writeString(file, "row " + index, StandardCharsets.UTF_8));
+                // Stable files from earlier cycles are copied while later ones are deleted.
+                agent.scanNow();
+                agent.advancePastStability();
+                agent.scanNow();
                 producerDid("delete burst-" + index, () -> Files.deleteIfExists(file));
             }
 
@@ -110,16 +114,13 @@ class ProducerNonInterferenceTest {
             assertEquals(
                     0L,
                     agent.count(CopyOutcome.FAILED),
-                    "a FAILED here would mean bytes were lost for a reason other than the race");
+                    "Agent log: " + String.join(" | ", agent.problemLines()));
 
-            // IT-04: report the race measurement rather than asserting a threshold on it.
             System.out.println(
-                    "IT-18b/IT-04 race measurement over " + CYCLES + " create-delete cycles: "
+                    "IT-18b over " + CYCLES + " create-copy-delete cycles: "
                             + "COPIED=" + agent.count(CopyOutcome.COPIED)
-                            + " PARTIAL=" + agent.count(CopyOutcome.PARTIAL)
                             + " VANISHED=" + agent.count(CopyOutcome.VANISHED)
-                            + " LOCKED=" + agent.count(CopyOutcome.LOCKED)
-                            + " UNCHANGED=" + agent.count(CopyOutcome.UNCHANGED));
+                            + " LOCKED=" + agent.count(CopyOutcome.LOCKED));
         }
     }
 
@@ -158,10 +159,16 @@ class ProducerNonInterferenceTest {
     @DisplayName("IT-19b: continuous appends succeed while the agent repeatedly copies the file")
     void it19b_continuousAppendsDuringLiveCopying() throws Exception {
         try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
-            final Path file = agent.write("stream.xml", "start");
+            final Path file =
+                    agent.write("CPJstream.xml", "start", java.time.LocalDateTime.of(2026, 10, 15, 10, 0));
 
             for (int i = 0; i < 100; i++) {
                 final int index = i;
+                // Each pass makes the file look stable and starts a copy, then appends to it
+                // while that copy may still be holding it open.
+                agent.scanNow();
+                agent.advancePastStability();
+                agent.scanNow();
                 producerDid(
                         "append " + index,
                         () -> Files.writeString(
@@ -170,14 +177,13 @@ class ProducerNonInterferenceTest {
                                 StandardCharsets.UTF_8,
                                 StandardOpenOption.WRITE,
                                 StandardOpenOption.APPEND));
-                Thread.sleep(5L);
             }
 
-            agent.awaitIdle();
+            agent.copyStableFiles();
 
             assertEquals(List.of(), producerFailures, "PD-1");
             final String finalContent = Files.readString(file, StandardCharsets.UTF_8);
-            agent.awaitMirrored("stream.xml", finalContent);
+            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJstream.xml", finalContent);
         }
     }
 
@@ -206,12 +212,15 @@ class ProducerNonInterferenceTest {
     void it20b_rapidRenameNeverFailsTheProducer() throws Exception {
         try (AgentHarness agent = AgentHarness.start(sourceRoot, mirrorRoot, logFolder)) {
             for (int i = 0; i < CYCLES; i++) {
-                final Path created = sourceRoot.resolve("new-" + i + ".xml");
-                final Path renamed = sourceRoot.resolve("done-" + i + ".xml");
+                final Path created = sourceRoot.resolve("CPJnew-" + i + ".xml");
+                final Path renamed = sourceRoot.resolve("CPJdone-" + i + ".xml");
                 final int index = i;
                 producerDid(
                         "create new-" + index,
                         () -> Files.writeString(created, "row " + index, StandardCharsets.UTF_8));
+                agent.scanNow();
+                agent.advancePastStability();
+                agent.scanNow();
                 producerDid("rename new-" + index, () -> Files.move(created, renamed));
             }
 
@@ -228,7 +237,7 @@ class ProducerNonInterferenceTest {
      * Runs a real Windows command and returns its exit code.
      *
      * <p>The tests above use Java's own file operations as a stand-in for the producer, which is
-     * convenient but imperfect: the JDK could be taking a code path that Gemcom does not. These
+     * convenient but imperfect: the JDK could be taking a code path that POS Link does not. These
      * tests remove that doubt by having a genuinely separate Windows process perform the delete,
      * rename and write. If a separate process can do it, the producer can do it.
      */

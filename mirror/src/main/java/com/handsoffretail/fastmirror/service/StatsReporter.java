@@ -4,11 +4,11 @@ import com.handsoffretail.fastmirror.entity.CopyResult;
 import com.handsoffretail.fastmirror.entity.CopyStats;
 
 /**
- * Owns the copy counters and emits the periodic summary (FR-21, SRS 9.8).
+ * Owns the copy counters and emits the periodic summary.
  *
- * <p>The counters are the product's instrumentation, not decoration. {@code VANISHED} is the
- * measurement of the irreducible race in SRS 12; {@code PARTIAL} says whether reads are failing
- * mid-transfer. Both exist so the operator can answer questions from a log rather than a guess.
+ * <p>The counters are the product's instrumentation, not decoration: {@code FAILED} and
+ * {@code LOCKED} say whether files are being held back, so the operator can answer questions from a
+ * log rather than a guess.
  */
 public interface StatsReporter {
 

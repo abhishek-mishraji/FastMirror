@@ -2,15 +2,31 @@
 
 ## Project: FastMirror — Windows Fast Folder Mirror Agent
 
-**Version:** 2.0
-**Date:** 2026-09-20
-**Supersedes:** 1.0 (2026-09-20)
+**Version:** 3.0
+**Date:** 2026-10-11
+**Supersedes:** 2.0 (2026-09-20)
 **Platform:** Windows 10 / 11
 **Language:** Java 21
 **Build System:** Gradle (Kotlin DSL, standalone project)
 **Application Type:** Background file mirroring agent
 **Runtime dependencies:** JDK only (no third-party libraries)
 **Status:** Specification — not yet implemented
+
+### Changes in 3.0 (2026-10-11) — POS Link Archive
+
+v3 retargets FastMirror from the Gemcom instant-capture case to the CStore Essentials **POS Link Archive** folder, where files persist. Where this section conflicts with the rest of the document, this section wins. Design and decisions: [IMPLEMENTATION_PLAN_POSLINK.md](IMPLEMENTATION_PLAN_POSLINK.md).
+
+| Change | Replaces |
+|---|---|
+| **Stable-then-copy.** A scan every `SCAN_INTERVAL_SECONDS` (default 60) copies a file once its size and modified time have been unchanged for `STABILITY_MINUTES` (default 3). The file is judged by attributes only; it is never locked or opened exclusively. | The watcher, event thread, 500 ms sweep and capture-latency goal (§9.2, §9.3, §9.7, FR-01…FR-03, FR-13…FR-15, NFR-01, C-5, C-6) |
+| **Selection.** Root files by 3-character prefix (`INCLUDE_PREFIXES`, case-insensitive) and extension (`INCLUDE_EXTENSIONS`, default `xml`). Files directly in `INCLUDE_SUBFOLDERS` by `SUBFOLDER_EXTENSIONS` (default `pdf`), no prefix filter. `COPY_FROM_DATE` limits by creation date. | Copy-everything-except-excludes (FR-18 still applies on top) |
+| **Grouped layout.** Root: `<PREFIX>/<yyyy>/<month>/[<yyyy-MM-dd>/]<name>` per `GROUP_BY=DATE\|MONTH`. Subfolder: `<subfolder>/<yyyy>/<month>/<name>`. Date = the file's creation time converted to `TIME_ZONE` (default `America/New_York`), independent of the PC's zone; month = lower-case English name. | Structure-preserving relative paths (FR-06, §6.2 `PathMapper`) |
+| **Copy ledger.** `state/copied.ledger` (outside source and mirror) records every completed copy by path, creation time and size; recorded files are never copied again. Compacted at startup. | Size/timestamp difference detection and `CONTENT_VERIFY` (§9.4) |
+| **No partial publication.** A read that fails part-way publishes nothing and is retried on the next scan. `PARTIAL`, `UNCHANGED` and `PUBLISH_PARTIAL` are removed. | PD-2, FR-27, §9.5 partial path |
+| Filename-reuse detection removed; a new file with the same name and destination overwrites the old copy. | FR-31, R-10, U-1 |
+| Retired keys `SWEEP_INTERVAL_MS`, `CONTENT_VERIFY`, `PUBLISH_PARTIAL`, `MIRROR_EMPTY_DIRECTORIES` warn and are ignored. | §7.1 |
+
+Unchanged: the non-interference rules NI-1…NI-13 and their enforcement (AT-02, AT-03, IT-18…IT-20), atomic publish via staging files, the never-delete-from-mirror rule, the log format, the tray icon and packaging.
 
 ### Changes in 2.0
 
