@@ -14,7 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class GlobPathFilterImplTest {
 
-    /** The documented default of SRS 7.1. */
+    /** The default of EXCLUDE_PATTERNS. */
     private static final List<String> DEFAULTS = List.of("~$*", "*.tmp", "*.fmtmp");
 
     private final PathFilter filter = new GlobPathFilterImpl(DEFAULTS);

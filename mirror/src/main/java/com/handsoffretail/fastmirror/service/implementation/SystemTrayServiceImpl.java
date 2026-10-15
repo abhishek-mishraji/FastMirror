@@ -31,7 +31,7 @@ import javax.swing.JFrame;
 import javax.swing.JOptionPane;
 
 /**
- * A notification-area icon built on {@link SystemTray} (SRS 9.11).
+ * A notification-area icon built on {@link SystemTray}.
  *
  * <ul>
  *   <li>On start, a Windows notification: FastMirror is running, copying from the source folder to

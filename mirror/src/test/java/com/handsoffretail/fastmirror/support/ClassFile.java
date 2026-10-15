@@ -14,8 +14,8 @@ import java.util.Set;
 /**
  * A minimal Java class-file reader, enough to answer "what does this class reference".
  *
- * <p>Written by hand because AR-8 permits no third-party library, not even in tests, and because
- * the rules of SRS 5.1 need enforcing mechanically rather than by review alone. A rule that is only
+ * <p>Written by hand because FastMirror uses no third-party library, not even in tests, and because
+ * the read-only rules need enforcing mechanically rather than by review alone. A rule that is only
  * written down is a rule that gets broken during the next refactor.
  *
  * <p>Parses the constant pool precisely rather than scanning the file for strings. Precision

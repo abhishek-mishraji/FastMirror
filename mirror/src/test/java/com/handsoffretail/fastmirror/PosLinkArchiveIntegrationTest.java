@@ -43,6 +43,20 @@ class PosLinkArchiveIntegrationTest {
         return AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory, overrides);
     }
 
+    /** An extra folder outside the source folder, as INCLUDE_SUBFOLDERS requires. */
+    private Path journals() throws java.io.IOException {
+        return Files.createDirectories(baseDirectory.resolve("Journals"));
+    }
+
+    private static Path writeTo(Path folder, String relative, String content, LocalDateTime created)
+            throws java.io.IOException {
+        final Path file = folder.resolve(relative);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content);
+        AgentHarness.setCreated(file, created);
+        return file;
+    }
+
     @Test
     @DisplayName("PL-01: only selected prefixes are copied, into their date folders, after the wait")
     void pl01_backlogOfSelectedPrefixes() throws Exception {
@@ -155,27 +169,27 @@ class PosLinkArchiveIntegrationTest {
     }
 
     @Test
-    @DisplayName("PL-06: GROUP_BY=MONTH puts files directly in the month folder")
-    void pl06_groupByMonth() throws Exception {
-        try (AgentHarness agent = start(Map.of("GROUP_BY", "MONTH"))) {
-            agent.write("CPJ432.xml", "monthly", OCT_15);
+    @DisplayName("PL-06: every file goes into its day folder, across a year end")
+    void pl06_dayFolders() throws Exception {
+        try (AgentHarness agent = start()) {
+            agent.write("CPJ432.xml", "daily", OCT_15);
             agent.write("HRS9.xml", "january", LocalDateTime.of(2027, 1, 2, 8, 0));
             agent.copyStableFiles();
 
             assertEquals(
-                    List.of("CPJ/2026/october/CPJ432.xml", "HRS/2027/january/HRS9.xml"),
+                    List.of("CPJ/2026/october/2026-10-15/CPJ432.xml", "HRS/2027/january/2027-01-02/HRS9.xml"),
                     agent.mirroredFiles());
         }
     }
 
     @Test
-    @DisplayName("PL-07: an included subfolder copies only its pdf files, grouped by month")
+    @DisplayName("PL-07: an included folder copies only its pdf files, into their day folders")
     void pl07_subfolderPdfs() throws Exception {
-        try (AgentHarness agent =
-                start(Map.of("INCLUDE_SUBFOLDERS", "Journals", "GROUP_BY", "DATE"))) {
-            agent.write("Journals/journal_1015.pdf", "pdf bytes", OCT_15);
-            agent.write("Journals/CPJ1.xml", "an xml in the subfolder", OCT_15);
-            agent.write("Journals/deeper/nested.pdf", "too deep", OCT_15);
+        final Path journals = journals();
+        try (AgentHarness agent = start(Map.of("INCLUDE_SUBFOLDERS", journals.toString()))) {
+            writeTo(journals, "journal_1015.pdf", "pdf bytes", OCT_15);
+            writeTo(journals, "CPJ1.xml", "an xml in the extra folder", OCT_15);
+            writeTo(journals, "deeper/nested.pdf", "too deep", OCT_15);
             agent.write("Other/ignored.pdf", "not included", OCT_15);
             agent.write("CPJ1.xml", "root file", OCT_15);
             agent.copyStableFiles();
@@ -183,7 +197,7 @@ class PosLinkArchiveIntegrationTest {
             assertEquals(
                     List.of(
                             "CPJ/2026/october/2026-10-15/CPJ1.xml",
-                            "Journals/2026/october/journal_1015.pdf"),
+                            "Journals/2026/october/2026-10-15/journal_1015.pdf"),
                     agent.mirroredFiles());
         }
     }
@@ -363,12 +377,13 @@ class PosLinkArchiveIntegrationTest {
                         Map.of(
                                 "INCLUDE_PREFIXES", "FGM",
                                 "DATE_SOURCE", "FILENAME",
-                                "FILENAME_DATE_PATTERN", "??????yyMMdd*",
-                                "GROUP_BY", "MONTH"))) {
+                                "FILENAME_DATE_PATTERN", "??????yyMMdd*"))) {
             agent.write("FGM3402609230009241533201.xml", "store two", OCT_15);
             agent.copyStableFiles();
 
-            assertEquals(List.of("FGM/2026/september/FGM3402609230009241533201.xml"), agent.mirroredFiles());
+            assertEquals(
+                    List.of("FGM/2026/september/2026-09-23/FGM3402609230009241533201.xml"),
+                    agent.mirroredFiles());
         }
     }
 
@@ -406,18 +421,19 @@ class PosLinkArchiveIntegrationTest {
     @DisplayName("subfolder files use their own date setting")
     void subfolderDateSetting() throws Exception {
         final Map<String, String> settings = new java.util.HashMap<>(STORE_ONE);
-        settings.put("INCLUDE_SUBFOLDERS", "Journals");
+        final Path journals = journals();
+        settings.put("INCLUDE_SUBFOLDERS", journals.toString());
         settings.put("SUBFOLDER_DATE_SOURCE", "FILENAME");
         settings.put("SUBFOLDER_FILENAME_DATE_PATTERN", "*_yyyyMMdd.pdf");
         try (AgentHarness agent = start(settings)) {
-            agent.write("Journals/journal_20260815.pdf", "august journal", OCT_15);
+            writeTo(journals, "journal_20260815.pdf", "august journal", OCT_15);
             agent.write("CPJ2026-09-13-590.xml", "root file", OCT_15);
             agent.copyStableFiles();
 
             assertEquals(
                     List.of(
                             "CPJ/2026/september/2026-09-13/CPJ2026-09-13-590.xml",
-                            "Journals/2026/august/journal_20260815.pdf"),
+                            "Journals/2026/august/2026-08-15/journal_20260815.pdf"),
                     agent.mirroredFiles());
         }
     }
@@ -567,9 +583,9 @@ class PosLinkArchiveIntegrationTest {
             assertEquals(
                     List.of(
                             "MCM/2026/september/2026-09-30/MCM3402610010009421533209.xml",
-                            "PassportReports/2026/september/ShiftClose20260930122815.pdf",
-                            "PassportReports/2026/september/ShiftClose20261001001002.pdf",
-                            "PassportReports/2026/september/StoreClose20261001001017.pdf"),
+                            "PassportReports/2026/september/2026-09-30/ShiftClose20260930122815.pdf",
+                            "PassportReports/2026/september/2026-09-30/ShiftClose20261001001002.pdf",
+                            "PassportReports/2026/september/2026-09-30/StoreClose20261001001017.pdf"),
                     agent.mirroredFiles());
         }
 
@@ -669,19 +685,20 @@ class PosLinkArchiveIntegrationTest {
     }
 
     @Test
-    @DisplayName("a missing included subfolder is warned about once and picked up when it appears")
+    @DisplayName("a missing included folder is warned about once and picked up when it appears")
     void missingSubfolderAppearsLater() throws Exception {
-        try (AgentHarness agent = start(Map.of("INCLUDE_SUBFOLDERS", "Journals"))) {
+        final Path journals = baseDirectory.resolve("Journals");
+        try (AgentHarness agent = start(Map.of("INCLUDE_SUBFOLDERS", journals.toString()))) {
             agent.copyStableFiles();
             agent.copyStableFiles();
             assertEquals(
                     1L,
                     agent.problemLines().stream().filter(line -> line.contains("subfolder not found")).count());
 
-            agent.write("Journals/j1.pdf", "late arrival", OCT_15);
+            writeTo(journals, "j1.pdf", "late arrival", OCT_15);
             agent.copyStableFiles();
 
-            assertEquals(List.of("Journals/2026/october/j1.pdf"), agent.mirroredFiles());
+            assertEquals(List.of("Journals/2026/october/2026-10-15/j1.pdf"), agent.mirroredFiles());
         }
     }
 

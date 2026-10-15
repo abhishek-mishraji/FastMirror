@@ -16,9 +16,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * AT-01 to AT-04 — the rules of SRS 5.1 and §6, enforced against the compiled bytecode.
+ * AT-01 to AT-04 — FastMirror's read-only and structure rules, enforced against the compiled bytecode.
  *
- * <p>AT-02 and AT-03 are the ones that matter. §5.1 forbids a short list of ordinary, idiomatic
+ * <p>AT-02 and AT-03 are the ones that matter. They forbid a short list of ordinary, idiomatic
  * Java calls because each of them can make the producer's own file operations fail on Windows. A
  * prohibition that lives only in a document survives until the next person writes the obvious
  * three-line copy loop. These tests make the build fail instead.
@@ -58,7 +58,7 @@ class ArchitectureRulesTest {
     // ------------------------------------------------------------------ AT-01 / AT-04 structure
 
     @Test
-    @DisplayName("AT-01: every *Impl class lives in an implementation package (AR-2, AR-3)")
+    @DisplayName("AT-01: every *Impl class lives in an implementation package")
     void at01_implClassesLiveInImplementationPackages() {
         final List<String> offenders = new ArrayList<>();
         for (final ClassFile type : classes) {
@@ -90,7 +90,7 @@ class ArchitectureRulesTest {
     }
 
     @Test
-    @DisplayName("AT-04: Application exposes only main, start and private wiring helpers (AR-6)")
+    @DisplayName("AT-04: Application exposes only main, start and private wiring helpers")
     void at04_applicationIsWiringOnly() {
         final ClassFile application = find(ROOT_PACKAGE + ".Application");
 
@@ -113,7 +113,7 @@ class ArchitectureRulesTest {
     // ------------------------------------------------------------------ AT-02 source access
 
     @Test
-    @DisplayName("AT-02: only AtomicFileCopierImpl may open a file (AR-10, NI-1, NI-6)")
+    @DisplayName("AT-02: only AtomicFileCopierImpl may open a file")
     void at02_onlyTheCopierOpensFiles() {
         final List<String> bannedTypes =
                 List.of(
@@ -140,12 +140,12 @@ class ArchitectureRulesTest {
         assertEquals(
                 List.of(),
                 offenders,
-                "All source-file access must stay in AtomicFileCopierImpl, where SRS 5.1 is"
-                        + " reviewable in one place");
+                "All source-file access must stay in AtomicFileCopierImpl, where the read-only"
+                        + " rules are reviewable in one place");
     }
 
     @Test
-    @DisplayName("AT-02b: nothing anywhere calls Files.copy (NI-3, C-10)")
+    @DisplayName("AT-02b: nothing anywhere calls Files.copy")
     void at02b_nobodyCallsFilesCopy() {
         final List<String> offenders =
                 classes.stream()
@@ -157,13 +157,13 @@ class ArchitectureRulesTest {
                 List.of(),
                 offenders,
                 "Files.copy delegates to the Win32 copy API, whose source share mode is not ours"
-                        + " to choose (C-10)");
+                        + " to choose");
     }
 
     // ------------------------------------------------------------------ AT-03 mapping and locking
 
     @Test
-    @DisplayName("AT-03: nothing memory-maps or locks a file (NI-4, NI-5)")
+    @DisplayName("AT-03: nothing memory-maps or locks a file")
     void at03_noMappingAndNoLocking() {
         final List<String> offenders = new ArrayList<>();
 
@@ -186,12 +186,12 @@ class ArchitectureRulesTest {
         assertEquals(
                 List.of(),
                 offenders,
-                "NI-4/NI-5: mapping is a version-dependent hazard to the producer's delete and an"
+                "Mapping is a version-dependent hazard to the producer's delete and an"
                         + " OS-level lock blocks the producer outright");
     }
 
     @Test
-    @DisplayName("AT-03b: the copier opens the source with READ and no other option (NI-2)")
+    @DisplayName("AT-03b: the copier opens the source with READ and no other option")
     void at03b_copierUsesReadOnly() {
         final ClassFile copier = find(COPIER);
 
@@ -201,9 +201,9 @@ class ArchitectureRulesTest {
 
         // Note on scope: this class legitimately references write options too, because it writes
         // its own staging file inside the mirror. Bytecode analysis cannot tell which open they
-        // belong to, so "no write intent on the SOURCE open" is enforced by AR-10 keeping all
-        // source access in one small reviewable method, and verified behaviourally by IT-18, IT-19
-        // and IT-20 - if a write option ever reached the source open, the producer's own delete or
+        // belong to, so "no write intent on the SOURCE open" is enforced by keeping all source
+        // access in one small reviewable method, and verified behaviourally by
+        // ProducerNonInterferenceTest - if a write option ever reached the source open, the producer's own delete or
         // write would start failing and those tests would go red.
     }
 

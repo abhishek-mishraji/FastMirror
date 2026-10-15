@@ -47,7 +47,7 @@ class AtomicFileCopierImplTest {
     private PathMapper mapper;
     private Map<String, String> values;
 
-    /** Records the delays asked for, so backoff is asserted without any real sleeping (AR-9). */
+    /** Records the delays asked for, so backoff is asserted without any real sleeping. */
     private static final class RecordingSleeper implements Sleeper {
         private final List<Long> delays = new ArrayList<>();
 

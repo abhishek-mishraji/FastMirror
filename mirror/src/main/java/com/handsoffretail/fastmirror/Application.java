@@ -184,7 +184,6 @@ public final class Application {
                 "FastMirror started: " + config.sourceFolder() + " -> " + config.mirrorFolder()
                         + " (prefixes=" + String.join(",", config.includePrefixes())
                         + " ." + String.join(",.", config.includeExtensions())
-                        + ", groupBy=" + config.groupBy()
                         + (config.includeSubfolders().isEmpty()
                                 ? ""
                                 : ", subfolders=" + String.join(",", config.includeSubfolders())

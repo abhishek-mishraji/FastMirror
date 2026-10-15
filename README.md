@@ -4,7 +4,7 @@ A Windows background agent that copies selected files out of the **POS Link Arch
 
 ```
 C:\Program Files (x86)\CStore Essentials\POS Link\Service\Archive\
-    CPJ432.xml  HRS007.xml  SUM12.xml  ...  Journals\journal_1015.pdf
+    CPJ432.xml  HRS007.xml  SUM12.xml  ...
         |
         |  FastMirror: waits until each file is stable, copies the selected ones,
         |  sorts them by prefix and creation date, and remembers what it copied
@@ -12,7 +12,6 @@ C:\Program Files (x86)\CStore Essentials\POS Link\Service\Archive\
 ...\Mirrored_files\
     CPJ\2026\october\2026-10-15\CPJ432.xml
     HRS\2026\october\2026-10-15\HRS007.xml
-    Journals\2026\october\journal_1015.pdf
         |
         |  (separate, existing agent)
         v
@@ -30,9 +29,9 @@ There is one FastMirror per store PC, each with its own `.env`. FastMirror does 
 - the first three letters of the name are in `INCLUDE_PREFIXES` (case does not matter, so `cpj432.xml` counts as `CPJ`), and
 - the extension is in `INCLUDE_EXTENSIONS` (default `xml`).
 
-They go to `<PREFIX>\<year>\<month>\<date>\<name>` with `GROUP_BY=DATE`, or `<PREFIX>\<year>\<month>\<name>` with `GROUP_BY=MONTH`. The month is the English name in lower case (`october`) and the date is `2026-10-15`. The prefix folder is always upper case.
+They go to `<PREFIX>\<year>\<month>\<date>\<name>`. The month is the English name in lower case (`october`) and the date is `2026-10-15`. The prefix folder is always upper case.
 
-**Files in other folders** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). An entry is either a folder inside the source folder (`Journals`) or a full path to a folder anywhere (`Z:/PassportReports`), so one agent can copy a POS that writes to two folders. There is no prefix filter for them; leave files out with `EXCLUDE_PATTERNS`. They go to `<folder name>\<year>\<month>\<name>`, always grouped by month. Only files directly inside the folder are copied; folders nested deeper are ignored.
+**Files in other folders** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). Each entry is a full path to a folder anywhere (`Z:/PassportReports`), so one agent can copy a POS that writes to two folders. There is no prefix filter for them; leave files out with `EXCLUDE_PATTERNS`. They go to `<folder name>\<year>\<month>\<date>\<name>`. Only files directly inside the folder are copied; folders nested deeper are ignored.
 
 **The date** that picks the folder comes from one of three places, set per store with `DATE_SOURCE`. The code is the same for every store; only `.env` differs. Ready-made files are in `packaging/env-examples/`.
 
@@ -135,7 +134,7 @@ FastMirror refuses to start, with a message box explaining why and exit code 1, 
 - the mirror or state folder cannot be created or written;
 - two of the three folders overlap;
 - a prefix is not exactly 3 letters or digits;
-- `GROUP_BY` is not `DATE` or `MONTH`;
+- an `INCLUDE_SUBFOLDERS` entry is not a full path;
 - `COPY_FROM_DATE` is not a `yyyy-MM-dd` date;
 - `TIME_ZONE` is not a time zone name such as `America/New_York`;
 - `DATE_SOURCE=FILENAME` is set without a usable `FILENAME_DATE_PATTERN` (the same for the subfolder keys);
@@ -149,8 +148,6 @@ If `INCLUDE_PREFIXES` is empty but `INCLUDE_SUBFOLDERS` is set, only subfolders 
 - If the source folder is not there at startup (a network drive or VM share not yet connected), it starts anyway, logs a warning, and begins copying when the folder appears.
 - If the source folder drops out while running, it logs that once, keeps checking every scan, and carries on when the folder comes back. Nothing is copied twice.
 - A failed copy is logged and retried on the next scan; it never stops the agent.
-
-Settings from FastMirror v2 that no longer exist (`SWEEP_INTERVAL_MS`, `CONTENT_VERIFY`, `PUBLISH_PARTIAL`, `MIRROR_EMPTY_DIRECTORIES`) produce a warning and are ignored.
 
 ---
 
@@ -247,4 +244,4 @@ Two items cannot be verified off the store PC and are handed over unverified:
 
 ---
 
-Full specification: [SRS_FastMirror.md](SRS_FastMirror.md). Build plan and phase history: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (v2) and [IMPLEMENTATION_PLAN_POSLINK.md](IMPLEMENTATION_PLAN_POSLINK.md) (v3, the POS Link Archive changes).
+Current plan: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (date-first layout, UTC, day packaging). Earlier specifications and plans are in the git history.

@@ -3,7 +3,6 @@ package com.handsoffretail.fastmirror.service.implementation;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import com.handsoffretail.fastmirror.entity.Selection;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -23,35 +22,25 @@ class GroupedPathMapperImplTest {
     }
 
     @Test
-    @DisplayName("GROUP_BY=DATE: <PREFIX>/<yyyy>/<month>/<yyyy-MM-dd>/<name>")
-    void groupByDate() {
+    @DisplayName("<PREFIX>/<yyyy>/<month>/<yyyy-MM-dd>/<name>")
+    void dayFolder() {
         final Path target =
                 mapper.targetFor(
-                        new Selection("CPJ", GroupBy.DATE), Path.of("CPJ432.xml"), LocalDate.of(2026, 10, 15));
+                        new Selection("CPJ"), Path.of("CPJ432.xml"), LocalDate.of(2026, 10, 15));
 
         assertEquals("CPJ/2026/october/2026-10-15/CPJ432.xml", slashed(target));
     }
 
     @Test
-    @DisplayName("GROUP_BY=MONTH: <PREFIX>/<yyyy>/<month>/<name>")
-    void groupByMonth() {
-        final Path target =
-                mapper.targetFor(
-                        new Selection("CPJ", GroupBy.MONTH), Path.of("CPJ432.xml"), LocalDate.of(2026, 1, 1));
-
-        assertEquals("CPJ/2026/january/CPJ432.xml", slashed(target));
-    }
-
-    @Test
-    @DisplayName("a subfolder file keeps only its own name below the month folder")
+    @DisplayName("a subfolder file keeps only its own name below the day folder")
     void subfolderFile() {
         final Path target =
                 mapper.targetFor(
-                        new Selection("Journals", GroupBy.MONTH),
+                        new Selection("Journals"),
                         Path.of("Journals", "j.pdf"),
                         LocalDate.of(2026, 12, 31));
 
-        assertEquals("Journals/2026/december/j.pdf", slashed(target));
+        assertEquals("Journals/2026/december/2026-12-31/j.pdf", slashed(target));
     }
 
     @Test
@@ -71,7 +60,7 @@ class GroupedPathMapperImplTest {
     @Test
     @DisplayName("the year rolls over between 31 December and 1 January")
     void yearBoundary() {
-        final Selection cpj = new Selection("CPJ", GroupBy.DATE);
+        final Selection cpj = new Selection("CPJ");
 
         assertEquals(
                 "CPJ/2026/december/2026-12-31/CPJ1.xml",
@@ -88,7 +77,7 @@ class GroupedPathMapperImplTest {
                 IllegalArgumentException.class,
                 () ->
                         mapper.targetFor(
-                                new Selection("../../outside", GroupBy.MONTH),
+                                new Selection("../../outside"),
                                 Path.of("x.pdf"),
                                 LocalDate.of(2026, 1, 1)));
     }

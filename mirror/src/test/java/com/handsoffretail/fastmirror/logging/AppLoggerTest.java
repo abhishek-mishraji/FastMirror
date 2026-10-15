@@ -24,7 +24,7 @@ class AppLoggerTest {
     private static final ZoneId ZONE = ZoneId.of("UTC");
     private static final Instant NOON_20TH = Instant.parse("2026-09-20T12:00:00Z");
 
-    /** A clock the test moves by hand, so no assertion depends on wall-clock time (AR-9). */
+    /** A clock the test moves by hand, so no assertion depends on wall-clock time. */
     private static final class MutableClock extends Clock {
         private Instant now;
 
@@ -177,7 +177,7 @@ class AppLoggerTest {
     }
 
     @Test
-    @DisplayName("NI-9: logging never blocks the calling thread, even for a large burst")
+    @DisplayName("logging never blocks the calling thread, even for a large burst")
     void neverBlocksTheCaller() throws Exception {
         try (AppLogger logger = new AppLogger(logFolder, new MutableClock(NOON_20TH))) {
             // Far more lines than the queue holds. If submit() blocked, this would not return

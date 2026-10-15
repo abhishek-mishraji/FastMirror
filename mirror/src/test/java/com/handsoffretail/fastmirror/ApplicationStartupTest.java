@@ -10,7 +10,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -61,22 +60,6 @@ class ApplicationStartupTest {
         try (AgentHarness ignored = AgentHarness.start(sourceRoot, mirrorRoot, baseDirectory)) {
             assertFalse(Files.exists(mirrorRoot.resolve("x.xml.1.fmtmp")));
             assertTrue(Files.exists(mirrorRoot.resolve("keep.xml")), "nothing else is ever deleted");
-        }
-    }
-
-    @Test
-    @DisplayName("retired v2 keys in .env are warned about, not fatal")
-    @SuppressWarnings("try") // the agent is started for its startup log lines
-    void retiredKeysOnlyWarn() throws Exception {
-        try (AgentHarness agent =
-                AgentHarness.start(
-                        sourceRoot,
-                        mirrorRoot,
-                        baseDirectory,
-                        Map.of("SWEEP_INTERVAL_MS", "500", "PUBLISH_PARTIAL", "true"))) {
-            final List<String> problems = agent.problemLines();
-            assertTrue(problems.stream().anyMatch(line -> line.contains("SWEEP_INTERVAL_MS")), problems.toString());
-            assertTrue(problems.stream().anyMatch(line -> line.contains("PUBLISH_PARTIAL")), problems.toString());
         }
     }
 

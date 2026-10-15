@@ -1,7 +1,6 @@
 package com.handsoffretail.fastmirror.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.handsoffretail.fastmirror.entity.DateSource;
@@ -68,18 +67,5 @@ class EnvExamplesTest {
         assertEquals(java.time.LocalTime.of(3, 0), config.businessDayStartsAt());
         assertTrue(config.excludePatterns().contains("UNREADEMAIL*"));
         assertEquals(List.of(), config.warnings());
-    }
-
-    @Test
-    @DisplayName("passport-wolf.env refuses to start until its <STORE> placeholder is replaced")
-    void passportPlaceholderMustBeReplaced() throws IOException {
-        final Map<String, String> values = read("passport-wolf.env");
-        values.put(MirrorConfig.KEY_SOURCE_FOLDER, source.toString());
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "");
-
-        final ConfigException thrown =
-                assertThrows(ConfigException.class, () -> MirrorConfig.load(values::get, base));
-
-        assertTrue(thrown.getMessage().contains(MirrorConfig.KEY_MIRROR_FOLDER), thrown.getMessage());
     }
 }

@@ -13,7 +13,7 @@ java {
 }
 
 dependencies {
-    // AR-8: NO third-party runtime dependencies. JDK only.
+    // NO third-party runtime dependencies. JDK only: less to audit on a store PC.
     // Nothing may ever be added to `implementation` or `runtimeOnly`.
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -29,7 +29,7 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.add("-Xlint:all")
 }
 
-// Default test run: everything except the heavy scenarios (IT-13/14/15/16).
+// Default test run: everything except the heavy scenarios (SlowScenarioTest).
 tasks.test {
     useJUnitPlatform {
         excludeTags("slow")
@@ -55,7 +55,7 @@ tasks.register<Test>("slowTest") {
     }
 }
 
-// Single runnable jar, wrapped by Launch4j into FastMirror.exe (SRS 14.1).
+// Single runnable jar, wrapped by Launch4j into FastMirror.exe.
 tasks.register<Jar>("fatJar") {
     group = "distribution"
     description = "Builds the self-contained jar that Launch4j wraps as FastMirror.exe."
@@ -72,7 +72,7 @@ tasks.register<Jar>("fatJar") {
 
     from(sourceSets.main.get().output)
 
-    // There are no runtime dependencies (AR-8); this is here so the task stays
+    // There are no runtime dependencies; this is here so the task stays
     // correct if that ever changes, and fails loudly in review if it does.
     dependsOn(configurations.runtimeClasspath)
     from({

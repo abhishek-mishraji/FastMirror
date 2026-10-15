@@ -26,15 +26,15 @@ import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * IT-18, IT-19, IT-20 — the executable form of the prime directive (SRS 1.1, PD-1).
+ * IT-18, IT-19, IT-20 — the executable form of the first rule: never disturb the POS.
  *
  * <p>Every assertion here is made from the <em>producer's</em> point of view: the question is never
  * "did FastMirror capture the file" but "did the producer's own call succeed". If any of these go
- * red, the design is wrong and no amount of captured data makes up for it (SRS 17, item 3).
+ * red, the design is wrong and no amount of captured data makes up for it.
  *
- * <p>These tests also turn C-8 from a claim about JDK internals into a measured fact on this
+ * <p>These tests also turn the JDK's share flags from a claim about its internals into a measured fact on this
  * machine and this JDK. Java offers no API for setting Windows share flags, so the only honest way
- * to depend on that behaviour is to verify it and re-verify it on every build (R-9).
+ * to depend on that behaviour is to verify it and re-verify it on every build.
  */
 class ProducerNonInterferenceTest {
 
@@ -68,14 +68,14 @@ class ProducerNonInterferenceTest {
         final Path file = sourceRoot.resolve("held.xml");
         Files.writeString(file, "payload", StandardCharsets.UTF_8);
 
-        // Exactly how production opens a producer file (NI-1).
+        // Exactly how production opens a producer file.
         try (SeekableByteChannel held = AtomicFileCopierImpl.READ_ONLY_NIO.open(file)) {
 
             // The producer deletes the file out from under us. This must simply work.
-            assertDoesNotThrow(() -> Files.delete(file), "PD-1: the producer's delete must not fail");
+            assertDoesNotThrow(() -> Files.delete(file), "the producer's delete must not fail");
             assertFalse(Files.exists(file), "the name is gone from the directory");
 
-            // C-2: our already-open handle keeps serving the real data. This is the fact the
+            // Our already-open handle keeps serving the real data. This is the fact the
             // entire design rests on - the race is only on the first open, never on the read.
             final ByteBuffer buffer = ByteBuffer.allocate(64);
             final int read = held.read(buffer);
@@ -110,7 +110,7 @@ class ProducerNonInterferenceTest {
             assertEquals(
                     List.of(),
                     producerFailures,
-                    "PD-1: not one producer operation may fail because FastMirror was reading");
+                    "not one producer operation may fail because FastMirror was reading");
             assertEquals(
                     0L,
                     agent.count(CopyOutcome.FAILED),
@@ -151,7 +151,7 @@ class ProducerNonInterferenceTest {
             }
         }
 
-        assertEquals(List.of(), producerFailures, "PD-1: the producer must keep writing freely");
+        assertEquals(List.of(), producerFailures, "the producer must keep writing freely");
         assertTrue(Files.readString(file, StandardCharsets.UTF_8).contains("-row49"));
     }
 
@@ -181,7 +181,7 @@ class ProducerNonInterferenceTest {
 
             agent.copyStableFiles();
 
-            assertEquals(List.of(), producerFailures, "PD-1");
+            assertEquals(List.of(), producerFailures, "the producer must keep working");
             final String finalContent = Files.readString(file, StandardCharsets.UTF_8);
             agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJstream.xml", finalContent);
         }
@@ -226,7 +226,7 @@ class ProducerNonInterferenceTest {
 
             agent.awaitIdle();
 
-            assertEquals(List.of(), producerFailures, "PD-1: a rename must never hit a sharing violation");
+            assertEquals(List.of(), producerFailures, "a rename must never hit a sharing violation");
             assertEquals(0L, agent.count(CopyOutcome.FAILED));
         }
     }
@@ -271,7 +271,7 @@ class ProducerNonInterferenceTest {
 
             final int exitCode = runWindowsCommand("cmd", "/c", "del", "/q", file.toString());
 
-            assertEquals(0, exitCode, "PD-1: an external delete must succeed. " + producerOutput);
+            assertEquals(0, exitCode, "an external delete must succeed. " + producerOutput);
             assertFalse(Files.exists(file), "the producer's delete really took effect");
         }
     }
@@ -288,7 +288,7 @@ class ProducerNonInterferenceTest {
 
             final int exitCode = runWindowsCommand("cmd", "/c", "echo more>>" + file);
 
-            assertEquals(0, exitCode, "PD-1: an external write must succeed. " + producerOutput);
+            assertEquals(0, exitCode, "an external write must succeed. " + producerOutput);
             assertTrue(Files.readString(file, StandardCharsets.UTF_8).contains("more"));
         }
     }
@@ -305,7 +305,7 @@ class ProducerNonInterferenceTest {
 
             final int exitCode = runWindowsCommand("cmd", "/c", "ren", file.toString(), "external-renamed.xml");
 
-            assertEquals(0, exitCode, "PD-1: an external rename must succeed. " + producerOutput);
+            assertEquals(0, exitCode, "an external rename must succeed. " + producerOutput);
             assertTrue(Files.exists(sourceRoot.resolve("external-renamed.xml")));
         }
     }
@@ -313,14 +313,14 @@ class ProducerNonInterferenceTest {
     /**
      * Records what memory-mapping actually does on this platform.
      *
-     * <p>SRS C-9 originally asserted that a mapped section makes the producer's delete fail with
+     * <p>An earlier specification asserted that a mapped section makes the producer's delete fail with
      * {@code ERROR_USER_MAPPED_FILE}. On this machine — Windows 11 build 26200, JDK 21 — it does
      * not: modern Windows deletes by unlinking the name, and both an in-process and an external
-     * delete succeed against a mapped file. The specification has been corrected to say so.
+     * delete succeed against a mapped file. That claim was dropped.
      *
-     * <p>NI-4 still forbids mapping and {@code transferTo}, for the reasons that survive the
+     * <p>The architecture tests still forbid mapping and {@code transferTo}, for the reasons that survive the
      * correction: the behaviour is Windows-version-dependent and documented to fail elsewhere, an
-     * explicit bounded loop costs nothing, and mapping conflicts with NFR-04's bounded-memory rule.
+     * explicit bounded loop costs nothing, and mapping conflicts with the bounded-memory rule.
      * This test exists so that the measurement is on record and is re-taken on every build rather
      * than being assumed in either direction.
      */
@@ -346,10 +346,10 @@ class ProducerNonInterferenceTest {
                         + exitCode + " on " + System.getProperty("os.name") + " "
                         + System.getProperty("os.version") + ", JDK "
                         + System.getProperty("java.version")
-                        + ". SRS C-9 is written against this measurement.");
+                        + ".");
 
         // Deliberately no assertion on the platform's behaviour: this records a fact, it does not
-        // legislate one. NI-4 does not depend on the outcome either way.
+        // legislate one. The mapping ban does not depend on the outcome either way.
         System.gc();
         try {
             Files.deleteIfExists(file);

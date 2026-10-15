@@ -1,7 +1,7 @@
 package com.handsoffretail.fastmirror.logging;
 
 /**
- * Log severities, rendered verbatim inside the square brackets of each line (SRS 9.9).
+ * Log severities, rendered verbatim inside the square brackets of each line.
  *
  * <p>Deliberately only three. The operator reads this log beside the existing HOR AWS Sync Agent's
  * log and should not have to learn a second vocabulary.

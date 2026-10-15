@@ -15,7 +15,7 @@ import java.util.Objects;
  * Reads configuration from a {@code .env} file, falling back to OS environment variables.
  *
  * <p>Resolution order, matching the existing HOR AWS Sync Agent so operators configure both the
- * same way (SRS 7):
+ * same way:
  *
  * <ol>
  *   <li>{@code .env} beside the executable

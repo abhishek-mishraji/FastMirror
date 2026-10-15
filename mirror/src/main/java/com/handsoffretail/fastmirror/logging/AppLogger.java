@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The file log: one rolling file per day, 30 days retained (SRS 9.9).
+ * The file log: one rolling file per day, 30 days retained.
  *
  * <p>Lines are {@code yyyy-MM-dd HH:mm:ss [LEVEL] message}, matching the existing HOR AWS Sync
  * Agent so an operator reads both the same way.
@@ -31,14 +31,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p><strong>Writing is asynchronous, and that is a non-interference requirement rather than a
  * performance nicety.</strong> A copy worker holds an open handle on one of the producer's files
  * while it runs. If logging blocked that worker — a slow volume, a full disk, an antivirus scan —
- * the handle would stay open longer, which is exactly what NI-9 forbids. So callers hand a line to
+ * the handle would stay open longer, which is exactly what must never happen: a held handle can make the
+ * producer's own delete or rename wait. So callers hand a line to
  * a bounded queue and return immediately, and a single daemon thread does the writing.
  *
  * <p>The queue is bounded. When it is full, lines are <em>dropped</em> and counted rather than
  * blocking the caller. Losing log lines is a nuisance; holding a producer's file open for longer is
  * a defect. The drop count is reported when the log recovers, so the loss is never silent.
  *
- * <p>File contents are never logged (SRS 9.9). Only paths, sizes, outcomes and timings.
+ * <p>File contents are never logged. Only paths, sizes, outcomes and timings.
  */
 public final class AppLogger implements AutoCloseable {
 
@@ -122,7 +123,7 @@ public final class AppLogger implements AutoCloseable {
     /**
      * Stops accepting lines, drains what is already queued and closes the file.
      *
-     * <p>Called last during shutdown (SRS 9.10), after the copy workers have finished, so that
+     * <p>Called last during shutdown, after the copy workers have finished, so that
      * their final outcomes are on disk.
      */
     @Override

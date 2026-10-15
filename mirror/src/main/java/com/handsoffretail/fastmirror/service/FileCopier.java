@@ -10,7 +10,7 @@ import java.util.Optional;
  *
  * <p><strong>The sole custodian of the non-interference rules.</strong> Its implementation is the
  * only class in the codebase permitted to open a file inside the source folder, which is what makes
- * those rules reviewable in one place and enforceable by AT-02.
+ * those rules reviewable in one place and enforceable by the architecture tests.
  */
 public interface FileCopier {
 

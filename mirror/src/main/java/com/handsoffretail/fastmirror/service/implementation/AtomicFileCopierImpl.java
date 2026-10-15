@@ -55,9 +55,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>A read that fails part-way publishes nothing. The file is not recorded in the ledger, so the
  * next scan tries again; a truncated file uploaded to S3 and then marked done would be worse.
  *
- * <p>These are not stylistic preferences. AT-02 and AT-03 scan the compiled bytecode and fail the
- * build if the forbidden APIs appear anywhere, and IT-18/IT-19/IT-20 verify the resulting behaviour
- * against a simulated producer.
+ * <p>These are not stylistic preferences. The architecture tests scan the compiled bytecode and fail
+ * the build if the forbidden APIs appear anywhere, and ProducerNonInterferenceTest verifies the
+ * resulting behaviour against a simulated producer.
  */
 public final class AtomicFileCopierImpl implements FileCopier {
 

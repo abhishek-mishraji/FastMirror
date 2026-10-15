@@ -2,9 +2,10 @@ package com.handsoffretail.fastmirror.service;
 
 /**
  * Injectable delay, so retry backoff can be driven deterministically in tests rather than by
- * wall-clock sleeps (AR-9).
+ * wall-clock sleeps.
  *
- * <p>The only production use is the open-retry backoff of SRS 9.5.
+ * <p>The only production use is the backoff between attempts to open a
+ * locked source file.
  */
 public interface Sleeper {
 
@@ -14,7 +15,7 @@ public interface Sleeper {
      * @param millis how long to pause; zero or negative returns immediately
      * @throws InterruptedException if the thread is interrupted while paused, which callers must
      *                              propagate or handle by restoring the interrupt flag — shutdown
-     *                              depends on it (SRS 9.10)
+     *                              depends on it
      */
     void sleep(long millis) throws InterruptedException;
 }

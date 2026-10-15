@@ -1,7 +1,6 @@
 package com.handsoffretail.fastmirror.config;
 
 import com.handsoffretail.fastmirror.entity.DateSource;
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -34,10 +33,10 @@ import java.util.regex.Pattern;
  * @param includePrefixes     3-character file-name prefixes copied from the source root, upper case;
  *                            empty means no root files are copied
  * @param includeExtensions   extensions copied from the source root, lower case, without the dot
- * @param groupBy             grouping of root files below {@code <yyyy>/<month>}
- * @param includeSubfolders   folders whose files are copied too, by name: subfolders of the source
- *                            root, and the last part of each full path given
- * @param externalSubfolders  the folders given as full paths, by name; they may live anywhere
+ * @param includeSubfolders   extra folders whose files are copied too, by name: the last part of
+ *                            each full path given
+ * @param externalSubfolders  those folders' full paths, by name; they may live anywhere outside the
+ *                            source, mirror and state folders
  * @param subfolderExtensions extensions copied from those subfolders, lower case, without the dot
  * @param copyFromDate        copy only files created on or after this date; {@code null} copies all
  * @param timeZone            the zone in which a file's creation time is turned into a date, for
@@ -71,7 +70,6 @@ public record MirrorConfig(
         Path mirrorFolder,
         List<String> includePrefixes,
         List<String> includeExtensions,
-        GroupBy groupBy,
         List<String> includeSubfolders,
         Map<String, Path> externalSubfolders,
         List<String> subfolderExtensions,
@@ -101,7 +99,6 @@ public record MirrorConfig(
     public static final String KEY_MIRROR_FOLDER = "MIRROR_FOLDER";
     public static final String KEY_INCLUDE_PREFIXES = "INCLUDE_PREFIXES";
     public static final String KEY_INCLUDE_EXTENSIONS = "INCLUDE_EXTENSIONS";
-    public static final String KEY_GROUP_BY = "GROUP_BY";
     public static final String KEY_INCLUDE_SUBFOLDERS = "INCLUDE_SUBFOLDERS";
     public static final String KEY_SUBFOLDER_EXTENSIONS = "SUBFOLDER_EXTENSIONS";
     public static final String KEY_COPY_FROM_DATE = "COPY_FROM_DATE";
@@ -125,12 +122,7 @@ public record MirrorConfig(
     public static final String KEY_LOG_FOLDER = "LOG_FOLDER";
     public static final String KEY_STATE_FOLDER = "STATE_FOLDER";
 
-    /** Keys from FastMirror v2 that no longer do anything. Present in an old .env, they only warn. */
-    public static final List<String> RETIRED_KEYS =
-            List.of("SWEEP_INTERVAL_MS", "CONTENT_VERIFY", "PUBLISH_PARTIAL", "MIRROR_EMPTY_DIRECTORIES");
-
     public static final String DEFAULT_INCLUDE_EXTENSIONS = "xml";
-    public static final GroupBy DEFAULT_GROUP_BY = GroupBy.DATE;
     public static final String DEFAULT_SUBFOLDER_EXTENSIONS = "pdf";
     public static final String DEFAULT_TIME_ZONE = "America/New_York";
     public static final DateSource DEFAULT_DATE_SOURCE = DateSource.CREATED;
@@ -155,7 +147,6 @@ public record MirrorConfig(
     public MirrorConfig {
         Objects.requireNonNull(sourceFolder, "sourceFolder");
         Objects.requireNonNull(mirrorFolder, "mirrorFolder");
-        Objects.requireNonNull(groupBy, "groupBy");
         Objects.requireNonNull(timeZone, "timeZone");
         Objects.requireNonNull(dateSource, "dateSource");
         Objects.requireNonNull(subfolderDateSource, "subfolderDateSource");
@@ -248,7 +239,6 @@ public record MirrorConfig(
         final List<String> includeExtensions =
                 extensions(value(lookup, KEY_INCLUDE_EXTENSIONS, DEFAULT_INCLUDE_EXTENSIONS),
                         KEY_INCLUDE_EXTENSIONS);
-        final GroupBy groupBy = groupBy(lookup);
         final Subfolders subfolders = subfolders(value(lookup, KEY_INCLUDE_SUBFOLDERS, ""));
         final List<String> includeSubfolders = subfolders.names();
         final List<String> subfolderExtensions =
@@ -336,19 +326,11 @@ public record MirrorConfig(
         final Map<String, Path> externalSubfolders =
                 externalFolders(subfolders.external(), source, mirror, stateFolder, warnings);
 
-        for (final String retired : RETIRED_KEYS) {
-            final String raw = lookup.apply(retired);
-            if (raw != null && !raw.isBlank()) {
-                warnings.add(retired + " is no longer used and has been ignored. Remove it from .env.");
-            }
-        }
-
         return new MirrorConfig(
                 source,
                 mirror,
                 includePrefixes,
                 includeExtensions,
-                groupBy,
                 includeSubfolders,
                 externalSubfolders,
                 subfolderExtensions,
@@ -521,81 +503,54 @@ public record MirrorConfig(
         return List.copyOf(extensions);
     }
 
-    private static GroupBy groupBy(Function<String, String> lookup) {
-        final String raw = lookup.apply(KEY_GROUP_BY);
-        if (raw == null || raw.isBlank()) {
-            return DEFAULT_GROUP_BY;
-        }
-        try {
-            return GroupBy.valueOf(raw.trim().toUpperCase(Locale.ROOT));
-        } catch (final IllegalArgumentException e) {
-            throw new ConfigException(
-                    KEY_GROUP_BY + " must be DATE or MONTH, was '" + raw.trim() + "'.", e);
-        }
-    }
-
     /**
      * @param names    every folder by name, in the order given
-     * @param external the folders given as full paths, by name, not yet validated
+     * @param external the same folders' full paths, by name, not yet validated
      */
     private record Subfolders(List<String> names, Map<String, Path> external) {}
 
     /**
-     * Each entry is either a plain name of a folder directly inside the source folder ({@code
-     * Journals}) or a full path to a folder anywhere ({@code Z:/PassportReports}). Either way the
-     * folder's name becomes the first folder of its files in the mirror, so names must be unique.
+     * Each entry is a full path to a folder anywhere ({@code Z:/PassportReports}). The folder's name
+     * becomes the type folder of its files in the mirror, so names must be unique.
      */
     private static Subfolders subfolders(String raw) {
         final List<String> names = new ArrayList<>();
         final Map<String, Path> external = new LinkedHashMap<>();
-        // Lower-cased name -> whether it was given as a full path.
-        final Map<String, Boolean> seen = new LinkedHashMap<>();
+        final Set<String> seen = new LinkedHashSet<>();
         for (final String entry : splitList(raw)) {
-            final String name;
             final Path path = asAbsolutePath(entry);
-            if (path != null) {
-                final Path last = path.getFileName();
-                if (last == null) {
-                    throw new ConfigException(
-                            KEY_INCLUDE_SUBFOLDERS + " cannot be a whole drive, was '" + entry
-                                    + "'. Name a folder, such as Z:/PassportReports.");
-                }
-                name = last.toString();
-            } else {
-                if (entry.equals(".") || entry.equals("..") || entry.contains("/")
-                        || entry.contains("\\") || entry.contains(":")) {
-                    throw new ConfigException(
-                            KEY_INCLUDE_SUBFOLDERS + " entries must be a folder name directly inside "
-                                    + KEY_SOURCE_FOLDER + ", such as Journals, or a full path such as"
-                                    + " Z:/PassportReports, was '" + entry + "'.");
-                }
-                name = entry;
+            final Path last = path.getFileName();
+            if (last == null) {
+                throw new ConfigException(
+                        KEY_INCLUDE_SUBFOLDERS + " cannot be a whole drive, was '" + entry
+                                + "'. Name a folder, such as Z:/PassportReports.");
             }
-            final Boolean earlierWasPath = seen.putIfAbsent(name.toLowerCase(Locale.ROOT), path != null);
-            if (earlierWasPath != null) {
-                if (!earlierWasPath && path == null) {
-                    continue; // the same plain name twice, perhaps in another case: keep the first
-                }
+            final String name = last.toString();
+            if (!seen.add(name.toLowerCase(Locale.ROOT))) {
                 throw new ConfigException(
                         KEY_INCLUDE_SUBFOLDERS + " has two folders named '" + name + "'. Each"
                                 + " folder's name becomes its folder in the mirror, so they must differ.");
             }
             names.add(name);
-            if (path != null) {
-                external.put(name, path);
-            }
+            external.put(name, path);
         }
         return new Subfolders(List.copyOf(names), external);
     }
 
-    /** A full path such as Z:/PassportReports, or {@code null} for a plain name. */
+    /** A full path such as Z:/PassportReports; anything else is a configuration error. */
     private static Path asAbsolutePath(String entry) {
+        final Path path;
         try {
-            final Path path = Path.of(entry);
-            return path.isAbsolute() ? path.toAbsolutePath().normalize() : null;
+            path = Path.of(entry);
         } catch (final RuntimeException e) {
             throw new ConfigException(KEY_INCLUDE_SUBFOLDERS + " entry is not a valid path: " + entry, e);
         }
+        if (!path.isAbsolute()) {
+            throw new ConfigException(
+                    KEY_INCLUDE_SUBFOLDERS + " entries must be full paths to a folder, such as "
+                            + KEY_INCLUDE_SUBFOLDERS + "=Z:/PassportReports, was '" + entry + "'.");
+        }
+        return path.toAbsolutePath().normalize();
     }
 
     /**
@@ -620,7 +575,7 @@ public record MirrorConfig(
             }
             validateNoOverlap(
                     source, KEY_SOURCE_FOLDER, folder, KEY_INCLUDE_SUBFOLDERS,
-                    "A folder inside the source folder is named by its name alone, such as Journals.");
+                    "Files inside the source folder are selected by " + KEY_INCLUDE_PREFIXES + ".");
             validateNoOverlap(
                     mirror, KEY_MIRROR_FOLDER, folder, KEY_INCLUDE_SUBFOLDERS,
                     "This would cause an infinite copy loop.");

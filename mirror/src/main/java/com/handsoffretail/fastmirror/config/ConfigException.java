@@ -1,7 +1,7 @@
 package com.handsoffretail.fastmirror.config;
 
 /**
- * A configuration problem that prevents startup (SRS 7.3).
+ * A configuration problem that prevents startup.
  *
  * <p>Every message must be actionable on its own: it names the key, the offending value and what
  * was expected. The operator reading it is standing at a store PC with no debugger.

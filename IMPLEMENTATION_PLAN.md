@@ -1,247 +1,297 @@
-# FastMirror — Implementation Plan
+# FastMirror — Implementation Plan (store side)
 
-**Against:** `SRS_FastMirror.md` v2.0
-**Date:** 2026-09-20
-**Status:** implemented; phases 0-11 complete
-**Toolchain on this machine:** Temurin JDK 21.0.10, Gradle 9.7.0 — both verified present
+**Date:** 2026-10-15
+**Status:** fresh plan; replaces every earlier FastMirror plan and specification
+**Scope:** the store PC: FastMirror, plus how the S3 sync agent is set up next to it. The back end (S3 → PostgreSQL → dashboard) is designed in `HOR-Software\automation\DESIGN.md`.
 
-## Locked decisions
+---
 
+## 1. What FastMirror does
+
+```
+POS folders ──► FastMirror COPY ──► Mirrored_files ──► FastMirror PACKAGE ──► outbox ──► S3 agent ──► S3
+(read only)     file by file,        <store>\<yyyy>\     08:00 UTC next day:     finished     uploads, no
+                once stable,         <month>\<date>\     one zip per type        zips only    code change
+                by business date     <TYPE>\files        per business day
+```
+
+1. **Copy.** It watches the POS folders and copies each selected file once it has stopped changing. Each copy is filed under the file's **business date** and **type**. The POS is never disturbed: files are opened read-only, through one audited code path.
+2. **Package.** At a fixed UTC time each morning, it zips the previous business day, **one zip per file type**, into an outbox. Each zip is built in a staging folder and moved into the outbox in one step.
+3. **Hand over.** The S3 sync agent (`hor_aws_sync`) watches the outbox and uploads each new zip. That needs only its `.env`, no code change.
+
+The same build serves both POS types. The store type is chosen only in `.env`:
+
+| | Verifone Sapphire (Tiki) | Gilbarco Passport (Wolf) |
+|---|---|---|
+| Source | `C:\Program Files (x86)\CStore Essentials\POS Link\Service\Archive` | `Z:\BOOutBox` (XML) + `Z:\PassportReports` (PDF) |
+| Files per day | ~10 reports + 1 CPJ (8.6 MB) | ~952 XML (5.55 MB) + 3 PDFs (0.42 MB) |
+| Business date from | inside the file: `periodEndDate`, `closedTime` | inside the file: `<BusinessDate>`; PDFs: print time in the name + `BUSINESS_DAY_STARTS_AT=03:00` |
+| Zips per day | ~10 | ~9 (about 1.5 MB in total) |
+
+---
+
+## 2. Decisions (all agreed)
+
+### Time
 | # | Decision |
 |---|---|
-| 1 | Standalone Gradle project rooted at `C:\Users\abhia\OneDrive\Fast_Mirror`, with a self-contained `mirror/` subproject. |
-| 2 | `java.time.Clock` injected for wall-clock time; `System.nanoTime()` used directly for capture-latency measurement only (AR-9). |
-| 3 | Packaging is Launch4j (GUI mode, no console) + a `jre\` folder shipped beside `FastMirror.exe`. Double-click to run, matching the existing AWS agent. |
-| 4 | §6.1 is followed literally — every listed service gets its interface. |
-| 5 | `git init`, one commit per phase, reviewable incrementally. |
-| 6 | `PUBLISH_PARTIAL` defaults to `true`: captured bytes are published, never discarded (PD-2). |
-| 7 | **Producer non-interference is the prime directive** and outranks everything else, including capturing any individual file. |
+| T1 | **Every moment is UTC**, written with `Z` (`2026-10-16T08:00:04Z`): log lines, ledgers, zip manifests, the packaging schedule. The PC's own time zone is never used. |
+| T2 | **Business dates stay exactly as the POS writes them.** They are calendar labels, not moments, so they are never converted. A Tiki day closed at 21:40 New York (01:40 UTC next day) stays on its own day. |
+| T3 | **Times printed in file names** (Passport PDFs) are the store's wall clock. They are used only with `BUSINESS_DAY_STARTS_AT` to find the business date. |
+| T4 | **`TIME_ZONE` has one job:** dating files that carry no date of their own, from their creation time. |
+
+### Layout
+| # | Decision |
+|---|---|
+| L1 | **One layout everywhere: date first, then type.** It is the same in the mirror, the outbox and S3: `<store>\<yyyy>\<month>\<yyyy-MM-dd>\<TYPE>\`. The month is the lower-case English name (`october`). |
+| L2 | **Every file goes into its business day's folder, PDFs included.** There is no month-only grouping any more. |
+| L3 | **The type folder** is the file's prefix in capitals for root files (`PJR`, `CPJ`, `MSM`, …), or the folder name for an extra folder (`PassportReports`). |
+| L4 | **The store folder** in the mirror is the last part of `MIRROR_FOLDER`. In the outbox and S3 it is `STORE_FOLDER`. |
+
+### Packaging
+| # | Decision |
+|---|---|
+| P1 | **FastMirror zips; the S3 agent only uploads** whatever finished zip appears in the outbox. |
+| P2 | **One zip per type per business day** = exactly one mirror folder `<date>\<TYPE>\`. No zip for a type with no files that day. |
+| P3 | **Business day D is zipped at `PACKAGE_AT_UTC` (default `08:00`) on D+1.** That is 04:00 New York in summer and 03:00 in winter, after both stores' closes. |
+| P4 | **Late file → a complete new version.** A file for D arriving after its zip was built produces `…_v2.zip` with **all** of that folder's files. The back end loads the highest version. |
+| P5 | **Missed days are caught up automatically** at the next start, from `PACKAGE_FROM_DATE` if set. |
+| P6 | **Zip name:** `<STORE_FOLDER>_<TYPE>_<yyyy-MM-dd>_v<n>.zip`, with `manifest.json` inside. |
+| P7 | **Zips are deterministic.** The same files always give a byte-identical zip, so a rebuild after a crash never looks like a change to the S3 agent. |
+| P8 | **Excluded files are never zipped,** because they were never copied (e.g. `UNREADEMAIL*`). |
+| P9 | **Outbox zips are kept** until `OUTBOX_KEEP_DAYS` says otherwise (`0` = forever). Deleting locally never deletes from S3. |
+
+### Removed (development phase: nothing in production depends on it)
+| # | Removed | Why |
+|---|---|---|
+| R1 | `GROUP_BY` (and month-only folders) | Packaging needs day folders, and one layout is simpler |
+| R2 | Warnings about retired v2 keys (`SWEEP_INTERVAL_MS`, `PUBLISH_PARTIAL`, …) | No v2 install exists |
+| R3 | Plain-name `INCLUDE_SUBFOLDERS` (`Journals`) | Only full paths (`Z:/PassportReports`) are needed; Tiki has no extra folders |
+| R4 | The old Gemcom specification and the three earlier plans | Replaced by this document; the history is in git |
+
+**Everything else stays:**
+- copying with the stability wait and the copy ledger;
+- the three date sources (`CONTENT`, `FILENAME`, `CREATED`) and `BUSINESS_DAY_STARTS_AT`;
+- full-path extra folders;
+- keep-running through source outages;
+- the tray icon and its Exit fix;
+- the read-only safety rules and their tests.
 
 ---
 
-## 1. Guiding constraints
-
-Three rules shape every file in this plan.
-
-**The producer must never see an error (PD-1, §5.1).** All source access is funnelled through one class, `AtomicFileCopierImpl`, which opens read-only through NIO and nothing else. `Files.copy`, `transferTo`, `map` and `FileChannel.lock` are banned by name because each of them can make the producer's own delete or write fail on Windows. Two hand-written architecture tests scan the compiled bytecode and fail the build if any other class ever touches those APIs. This is not documentation — it is enforced.
-
-**The `open()` call is the whole product.** Everything before it is latency that costs files; everything after it is safe because a Windows handle survives deletion. So the watcher thread does nothing but drain the notification buffer, the event thread does no I/O, and the difference check happens on the worker, not on the hot path.
-
-**Never discard captured bytes.** If a read fails part-way, the prefix is published and counted as `PARTIAL`.
-
----
-
-## 2. Target layout
+## 3. Target layout
 
 ```
-Fast_Mirror/
-    SRS_FastMirror.md
-    IMPLEMENTATION_PLAN.md
-    README.md                          states the §12 limitation and the prime directive
-    .gitignore
-    .env                               local dev config (gitignored)
-    gradlew.bat  gradlew  gradle/wrapper/
-    settings.gradle.kts                rootProject.name = "fastmirror"; include("mirror")
-    build.gradle.kts                   empty root
-    mirror/
-        build.gradle.kts
-        src/main/java/com/handsoffretail/fastmirror/...       (§6.1 exactly)
-        src/test/java/com/handsoffretail/fastmirror/...
-    packaging/
-        launch4j.xml                   Launch4j config
-        env.template                   shipped .env template
+Mirrored_files\wolf_800_NY-13208\2026\october\2026-10-12\PJR\PJR3402610130004181533189.xml
+Mirrored_files\wolf_800_NY-13208\2026\october\2026-10-12\MSM\MSM3402610130009441533211.xml
+Mirrored_files\wolf_800_NY-13208\2026\october\2026-10-12\PassportReports\StoreClose20261013001017.pdf
+
+outbox\wolf_800_NY-13208\2026\october\2026-10-12\PJR\wolf_800_NY-13208_PJR_2026-10-12_v1.zip
+outbox\wolf_800_NY-13208\2026\october\2026-10-12\MSM\wolf_800_NY-13208_MSM_2026-10-12_v1.zip
+
+pos-raw/wolf_800_NY-13208/2026/october/2026-10-12/PJR/wolf_800_NY-13208_PJR_2026-10-12_v1.zip
 ```
 
-`mirror/` stays self-contained so it can later be dropped into `hor_aws_sync` with one `include` line.
+**Inside a zip:**
+
+```
+wolf_800_NY-13208_PJR_2026-10-12_v1.zip
+├── manifest.json
+└── 2026/october/2026-10-12/PJR/PJR3402610130004181533189.xml      (paths as in the mirror)
+```
+
+```json
+{
+  "store": "wolf_800_NY-13208",
+  "type": "PJR",
+  "businessDate": "2026-10-12",
+  "version": 1,
+  "createdAt": "2026-10-13T08:00:04Z",
+  "fastMirrorVersion": "3.x",
+  "fileCount": 913,
+  "files": [
+    { "path": "2026/october/2026-10-12/PJR/PJR3402610130004181533189.xml", "size": 4384, "sha256": "9f2c…" }
+  ]
+}
+```
+
+**How the back end fetches:**
+
+| Request | S3 calls |
+|---|---|
+| A whole day | list `…/2026-10-12/`, then download the highest version of each type: 1 `LIST` + ~9 `GET` |
+| One type for one day | list `…/2026-10-12/PJR/`, then download the highest version: 1 `LIST` + 1 `GET` |
 
 ---
 
-## 3. Phases
+## 4. Configuration (`.env`), final key list
 
-Bottom-up: pure logic first, I/O next, threads last, composition root last of all. Every phase ends compiling, with its tests green, and one git commit.
+| Group | Key | Default | Notes |
+|---|---|---|---|
+| **Folders** | `SOURCE_FOLDER` | required | the POS folder; read only |
+| | `MIRROR_FOLDER` | required | ends with the store folder, e.g. `…\Mirrored_files\wolf_800_NY-13208` |
+| | `INCLUDE_SUBFOLDERS` | empty | **full paths only**, e.g. `Z:/PassportReports` |
+| | `STATE_FOLDER` / `LOG_FOLDER` | `state` / `logs` | beside the exe |
+| **What to copy** | `INCLUDE_PREFIXES` | required* | 3-character prefixes, ignoring case |
+| | `INCLUDE_EXTENSIONS` / `SUBFOLDER_EXTENSIONS` | `xml` / `pdf` | |
+| | `EXCLUDE_PATTERNS` | `~$*,*.tmp,*.fmtmp` | e.g. add `UNREADEMAIL*` |
+| | `MAX_COPY_BYTES` | `0` | 0 = no limit |
+| | `COPY_FROM_DATE` | empty | by business date |
+| **Business date** | `DATE_SOURCE` / `SUBFOLDER_DATE_SOURCE` | `CREATED` | `CONTENT`, `FILENAME` or `CREATED` |
+| | `CONTENT_DATE_FIELDS` / `SUBFOLDER_CONTENT_DATE_FIELDS` | — | Wolf `BusinessDate`; Tiki `periodEndDate,closedTime` |
+| | `FILENAME_DATE_PATTERN` / `SUBFOLDER_FILENAME_DATE_PATTERN` | — | e.g. `*yyyyMMddHHmmss.pdf` |
+| | `CONTENT_SCAN_BYTES` | `65536` | |
+| | `BUSINESS_DAY_STARTS_AT` | `00:00` | store wall clock, for name and creation times |
+| | `TIME_ZONE` | `America/New_York` | only for creation-time dates (T4) |
+| **Copy timing** | `STABILITY_MINUTES` / `SCAN_INTERVAL_SECONDS` | `3` / `60` | |
+| | `COPY_WORKERS`, `OPEN_RETRY_ATTEMPTS`, `OPEN_RETRY_INITIAL_MS`, `STATS_INTERVAL_MS` | 4, 5, 5, 60000 | tuning |
+| **Packaging (new)** | `PACKAGE_ENABLED` | `false` | on in both example files |
+| | `STORE_FOLDER` | required when on | letters, digits, `_` `-` `.` |
+| | `OUTBOX_FOLDER` | required when on | the S3 agent's `WATCH_FOLDER` |
+| | `PACKAGE_STAGING_FOLDER` | `<OUTBOX_FOLDER>-staging` | must be on the outbox's drive |
+| | `PACKAGE_AT_UTC` | `08:00` | |
+| | `PACKAGE_FROM_DATE` | empty | oldest day for catch-up |
+| | `OUTBOX_KEEP_DAYS` | `0` | 0 = keep forever |
 
-### Phase 0 — scaffolding
-`git init` · `gradle init` (java-application, Kotlin DSL, JUnit Jupiter, Java 21) · rename the generated module to `mirror` · delete the sample classes · write `.gitignore` and the root `settings.gradle.kts`.
+\* `INCLUDE_PREFIXES` may be empty only if `INCLUDE_SUBFOLDERS` is set.
 
-`mirror/build.gradle.kts`:
-- `application` plugin, Java 21 toolchain
-- **zero** runtime dependencies (AR-8); `testImplementation` JUnit 5 only
-- `mainClass = "com.handsoffretail.fastmirror.Application"`
-- `tasks.test { useJUnitPlatform() }` with a `slow` tag excluded from the default run (IT-13/14/15/16 are heavy)
-- `fatJar` task: `Jar` with the `Main-Class` manifest attribute
+**S3 agent `.env`:**
 
-**Verification before anything is built on it:** a throwaway class that references `com.sun.nio.file.ExtendedWatchEventModifier.FILE_TREE` and compiles. `jdk.unsupported` should export it with no `--add-exports`; if I'm wrong, the flag goes into the build file now rather than being discovered in Phase F.
+```properties
+WATCH_FOLDER=<same as OUTBOX_FOLDER>
+S3_FOLDER=pos-raw
+```
 
-**Exit:** `gradlew.bat build` green. → commit `phase-0: gradle scaffolding`
-
-### Phase 1 — entities and pure logic
-| File | Notes |
-|---|---|
-| `entity/FileEventKind.java` | CREATED, MODIFIED, DELETED, OVERFLOW |
-| `entity/FileEvent.java` | `record(kind, path, eventNanos)` |
-| `entity/CopyOutcome.java` | the 8 values of §9.8, including `PARTIAL` |
-| `entity/CopyResult.java` | `record(outcome, bytesCopied, captureLatencyMs)` |
-| `entity/CopyStats.java` | immutable snapshot: per-outcome counts, latency avg/max |
-| `service/PathMapper.java` + `implementation/RelativePathMapperImpl.java` | pure; `relativize`, `toTarget`, containment check |
-| `service/PathFilter.java` + `implementation/GlobPathFilterImpl.java` | `PathMatcher` globs on the filename only |
-| `service/Sleeper.java` + `implementation/ThreadSleeperImpl.java` | AR-9 |
-
-**Tests:** UT-01, UT-02, UT-08. → commit `phase-1: entities and pure services`
-
-### Phase 2 — configuration
-| File | Notes |
-|---|---|
-| `config/ConfigException.java` | actionable message, drives exit code 1 |
-| `config/EnvFileReader.java` | `.env` beside the exe → parent dir → OS env; `#` comments, `KEY=VALUE`, trimmed, blanks ignored |
-| `config/MirrorConfig.java` | immutable record + `load(...)` factory running CV-1…CV-7 |
-
-All 13 keys of §7.1 with exact defaults and ranges. **CV-6 verifies source readability by listing the directory only** — no probe file is ever created in the source (NI-7). The mirror-side probe file is fine; the mirror is ours.
-
-**Tests:** UT-09, UT-10, UT-11, plus a boundary test per numeric key and a `SOURCE_FOLDER` untouched-after-validation assertion. → commit `phase-2: configuration and startup validation`
-
-### Phase 3 — logging
-`logging/LogLevel.java`, `logging/AppLogger.java` — JDK-only, daily rolling file, 30-day retention, `yyyy-MM-dd HH:mm:ss [LEVEL] message`, injected `Clock`, never logs file contents. Writes are buffered on a queue so a slow log volume can never stall a copy worker and therefore never extends how long a source handle is held (NI-9).
-
-**Tests:** format, rollover across a simulated date change, retention pruning. → commit `phase-3: logging`
-
-### Phase 4 — the copy core
-The most important phase. `AtomicFileCopierImpl` is the only class in the codebase permitted to open a source file.
-
-| File | Notes |
-|---|---|
-| `service/DifferenceDetector.java` + `SizeAndTimeDifferenceDetectorImpl.java` | §9.4; attribute reads only; vanished source → `false` |
-| `service/FileCopier.java` + `AtomicFileCopierImpl.java` | §9.5 verbatim |
-
-Implemented exactly as §9.5 specifies:
-- `openWithRetry` first — `FileChannel.open(source, READ)` and nothing else (NI-1, NI-2)
-- `NoSuchFileException` → `VANISHED` immediately, no retry (NI-11)
-- `AccessDeniedException` / `FileSystemException` → backoff `OPEN_RETRY_INITIAL_MS`, doubling, `OPEN_RETRY_ATTEMPTS` times → `LOCKED`
-- capture latency stamped the instant the open succeeds
-- `size()` from the open channel, used only for the `MAX_COPY_BYTES` test
-- **explicit 64 KB `ByteBuffer` read/write loop** — no `transferTo`, no `map`, no `Files.copy` (NI-4, C-9)
-- read failure → break, close staging, publish the prefix if any bytes were captured (FR-27); zero bytes → `FAILED`, nothing published (FR-28)
-- `setLastModifiedTime(staging, sourceMtime)` before the move (FR-09)
-- `ATOMIC_MOVE`, falling back to `REPLACE_EXISTING`
-- outer `catch Throwable` → `FAILED`, so nothing ever escapes a copy job (FR-29)
-- `finally` closes the channel and deletes the staging file on every path (NI-9, NFR-06)
-- a `ConcurrentHashMap.newKeySet()` cache of created mirror directories
-
-To make UT-17/UT-18 possible without faking a disk failure, the copier reads through a small internal seam — a supplier that returns the open `ReadableByteChannel` — which tests substitute with a channel that throws after N bytes. Production wiring passes the real `FileChannel.open`. This adds no interface to §6.1 and no indirection at runtime.
-
-**Tests:** UT-03…UT-07, UT-15, UT-16, UT-17, UT-18. → commit `phase-4: copy core with partial publication`
-
-### Phase 5 — copy queue
-`service/CopyQueue.java` + `CopyQueueImpl.java` — the QUEUED / RUNNING / RUNNING_DIRTY machine of §9.6 on a `ConcurrentHashMap` mutated only via `compute`. The entry carries the **earliest** pending `eventNanos`. Worker: `needsCopy` → `copy` → record outcome → re-dispatch if dirty, else remove. Fixed pool of `COPY_WORKERS`, which is what makes NI-10 true by construction.
-
-**Tests:** UT-12, UT-13, UT-14. → commit `phase-5: copy queue`
-
-### Phase 6 — watcher, policy, sweep, stats
-| File | Notes |
-|---|---|
-| `WatchServiceSourceWatcherImpl.java` | one `FILE_TREE` registration (C-5); `take()` loop on `fastmirror-watcher`; stamps `nanoTime()` per event; pushes to an unbounded `LinkedBlockingQueue`; **no other I/O**; watch failure → FR-23 exit |
-| `MirrorServiceImpl.java` | `fastmirror-events` thread; §9.3 exactly — OVERFLOW → sweep, DELETED → return, filter, directory check via `readAttributes`, submit. **No `needsCopy` here** |
-| `TreeSweepServiceImpl.java` | depth-first walk, per-entry error tolerance, attribute reads only (NI-12), `needsCopy` before submitting, logs only when N > 0 |
-| `LoggingStatsReporterImpl.java` | `LongAdder` counters, §9.8 summary line every `STATS_INTERVAL_MS` |
-
-**Tests:** unit-level tests for the event policy with a stub queue; sweep behaviour over a temp tree. → commit `phase-6: watcher, event policy, sweep, stats`
-
-### Phase 7 — composition root
-`Application.java` — wiring only (AR-6), in the exact order of §9.2 steps 1–11, including stale `.fmtmp` cleanup (FR-22) and watcher-before-sweep (FR-13). Shutdown hook implements §9.10. Default uncaught-exception handler per NFR-07.
-
-**Exit:** the agent runs against two temp folders and mirrors a file. → commit `phase-7: composition root`
-
-### Phase 8 — the prime-directive tests
-Written and run before the rest of the integration suite, because if these fail the design is wrong and everything after is wasted.
-
-| Test | Harness |
-|---|---|
-| IT-18 | A producer thread creates a file, waits until FastMirror has it open, then deletes it and **records whether its own delete threw**. 200 iterations. Any exception in the producer fails the test. |
-| IT-19 | A producer holds a file open and appends every 5 ms for 10 s while FastMirror repeatedly copies it. Every write must succeed; write latencies are recorded and checked for FastMirror-attributable outliers. |
-| IT-20 | Producer creates and immediately renames, 200 times. Every rename must succeed. |
-
-These turn C-8 from an assumption into a measured fact on your actual JDK and machine (R-9). → commit `phase-8: producer non-interference tests`
-
-### Phase 9 — remaining integration tests
-IT-01 … IT-17 and IT-21, with `@TempDir` and a harness that runs a live `Application` against temp folders.
-
-- IT-04 reports the COPIED/PARTIAL/VANISHED ratio — that is the §12 measurement, not a pass/fail threshold.
-- IT-06/IT-07 need a genuine exclusive lock; I will confirm the lock helper actually blocks a reader on Windows before relying on it.
-- IT-13/14/15/16 carry the `slow` tag.
-- **IT-16 (long soak) and IT-17 (interop) cannot complete here** — they need the store PC and the live sync agent. IT-16 is written parameterised and runs a few minutes locally; IT-17 is documented as a manual procedure in the README.
-
-→ commit `phase-9: integration tests`
-
-### Phase 10 — architecture and rule enforcement
-`ArchitectureRulesTest` (AT-01, AT-04) and `NonInterferenceRulesTest` (AT-02, AT-03). Both walk `build/classes` and scan each class file's constant pool for banned method and type references, using only the JDK (AR-8). AT-02 allows `AtomicFileCopierImpl` and nothing else.
-
-→ commit `phase-10: architecture and non-interference enforcement`
-
-### Phase 11 — packaging and documentation
-`fatJar` wiring, `packaging/launch4j.xml` (GUI mode, `jre\` beside the exe), `env.template`, and `README.md` carrying the §12 limitation, the prime directive, the operator duties of §14.3 and the manual IT-17 procedure.
-
-I can produce the exe and verify it launches headless here. **Verifying it on a clean no-JRE Windows 11 machine is yours** (DoD item 5), as is the 24-hour soak (item 6) and IT-17 (item 7).
-
-→ commit `phase-11: packaging and documentation`
+**The S3 agent's AWS key** needs `PutObject` and `GetObject` on `pos-raw/<STORE_FOLDER>/*`, plus `ListBucket` limited to that prefix. Its check before each upload (`HEAD`) is refused with `403` instead of answered with `404` when it lacks Get and List.
 
 ---
 
-## 4. Estimated size
+## 5. How packaging works
 
-| | Main | Test |
-|---|---|---|
-| Classes | ~30 | ~22 |
+### 5.1 When
 
-Phases 1–5 are the bulk of the low-risk work. Phase 4 holds nearly all the difficulty and all of the non-interference risk. Phase 6 is where the concurrency care goes.
+Packaging runs at start-up and then once a minute. It checks every day folder D in the mirror (D ≥ `PACKAGE_FROM_DATE`) whose due time has passed: **now (UTC) ≥ D+1 at `PACKAGE_AT_UTC`**. For each type folder T inside D:
 
----
-
-## 5. Field unknowns carried into the build
-
-Three properties of the target PC are not yet known. None blocks implementation; each has a safe default and a way of being answered with real data. Tracked as U-1…U-3 in SRS §15.1.
-
-| | Unknown | What I build now |
-|---|---|---|
-| U-1 | Whether the producer reuses filenames with different content | Build for unique names, as specified. Add **FR-31**: log a `WARN` whenever a copy replaces a target whose content actually differed. That line is the detector — a 24-hour soak answers the question instead of us guessing. If reuse turns out to be real, the fix is versioned mirror filenames, which changes what the sync agent sees and needs your agreement first (R-10). |
-| U-2 | Whether the source tree has subdirectories | Recursive watch and structure preservation are built either way; the flat case costs nothing extra. No decision needed. |
-| U-3 | Whether the sync agent watches `MIRROR_FOLDER` yet | `MIRROR_FOLDER` defaults to `C:/temp`. IT-17 is handed over marked unverified. Nothing in the build depends on it. |
-
-U-1 is the one with teeth: if names repeat and the sync agent is slower than the producer, a complete file could be overwritten in the mirror before it is uploaded. FR-31 exists so we find that out from a log rather than from missing data in S3.
-
-## 6. What I will not claim
-
-- I will report real test output, including failures, rather than asserting success.
-- The three items in §17 that require the store PC or the live sync agent will be handed over explicitly as unverified, not quietly marked done.
-- If IT-18 ever fails, I will stop and bring it to you rather than working around it. A workaround there would mean breaking the producer.
-
-
----
-
-## 7. Outcome
-
-All twelve phases are committed, one commit each. Clean build, no compiler warnings, **163 tests in the default suite and 4 in `slowTest`, all passing**.
-
-### Measured on this machine (Windows 11 build 26200, JDK 21.0.10)
-
-| | |
+| Situation | Action |
 |---|---|
-| Capture latency (IT-15, 3,000 files at 50/s) | **mean 4.63 ms, max 19 ms** — NFR-01 budget is 10 ms |
-| Atomic visibility (IT-13, 50 MB) | reader saw only *absent* or *complete*, never a partial size |
-| Overflow (IT-14) | 5,000 files, all mirrored, `FAILED=0` |
-| Soak (IT-16, 30 s) | 1,789 cycles, threads 14 → 14, `FAILED=0` |
-| Producer interference (IT-18/19/20 + external-process variants) | **zero** failed producer operations across 800+ delete, rename and write operations |
+| no package yet | build `v1` |
+| folder content differs from the last package's manifest | build `v(n+1)` |
+| no change | nothing |
 
-### Two things the build found rather than assumed
+Today is never zipped.
 
-**The SRS was wrong about memory mapping.** C-9 in v2.0 claimed a mapped section makes the producer's delete fail with `ERROR_USER_MAPPED_FILE`. On this platform it does not — modern Windows deletes by unlinking the name, and both in-process and external deletes succeed against a mapped file. The specification now records what was measured. NI-4 still forbids mapping, on the surviving rationale that the behaviour is version-dependent, is documented to fail elsewhere, and buys nothing.
+### 5.2 How one zip is built
 
-**A transient publish failure exists.** One `FAILED` appeared once in ~1,800 soak cycles and did not reproduce. Windows can briefly refuse a rename while a scanner holds the target open, so the publish step now retries three times with a short backoff. Retrying is safe there in a way that retrying a source open is not: the target is inside the mirror folder, which is ours.
+1. **List the folder,** skipping the copier's `*.fmtmp` files, which are still being written.
+2. **Write the zip into staging,** reading **mirror files only**:
+   - entries sorted by name;
+   - each entry's time = the file's modified time;
+   - add `manifest.json` (business date, type, version, files with size and SHA-256, `createdAt` in UTC).
+3. **Re-read the zip** and verify it against the manifest.
+4. **Force it to disk.**
+5. **Move it into the outbox atomically.** The S3 agent ignores only `~$` names, so a zip must never appear half-written.
+6. **Record it** in `state\package.ledger`.
 
-The rule tests were also verified to be capable of failing: a class deliberately violating NI-1, NI-3 and NI-4 was compiled in, three architecture tests went red, and they were green again once it was removed.
+**After a crash between steps 5 and 6,** the zip is found already in the outbox at start-up, verified and recorded, not rebuilt.
 
-### Handed over unverified
+### 5.3 Rules that cannot be broken
 
-These need the store PC and cannot be completed here:
+- **Packaging never reads the POS folders,** never changes the mirror, and never edits a zip already in the outbox.
+- **A packaging failure never stops copying.** It is logged and retried at the next check.
+- **A day whose folder lost files** (for example to a mirror clean-up) is never zipped incomplete. It is logged as an error instead.
 
-1. **IT-17** — interoperation with the live HOR AWS Sync Agent.
-2. **The 24-hour soak** against the real Gemcom folder (`gradlew slowTest -Dfastmirror.soak.seconds=86400`), with the `VANISHED`, `PARTIAL` and `FAILED` counts recorded.
-3. **Clean-machine launch** — `FastMirror.exe` plus `jre\` on a Windows 11 box with no JRE. The jar was verified to run standalone from a deployment folder; producing the `.exe` needs Launch4j, which is not installed here.
+---
+
+## 6. Phases
+
+One commit per phase. `gradlew build` passes at the end of every phase. Every phase keeps the read-only safety tests green.
+
+### Phase 0 — clean-up
+- **Delete** the old documents (R4). **Done** with this plan.
+- **Remove `GROUP_BY` (R1)** from config, path mapper, tests and examples.
+- **Remove the retired-key warnings (R2).**
+- **Remove plain-name `INCLUDE_SUBFOLDERS` (R3).** A plain name becomes a config error with an example of the full-path form.
+- **Code comments:** replace references to the deleted specification ("SRS 9.5", "NI-4", "PD-1", in 14 files) with the plain reason they stood for.
+- **README:** short, current, pointing to this plan.
+
+### Phase 1 — UTC for every moment
+- **Logs:** `2026-10-16 08:00:04Z [INFO] …`; one log file per UTC day.
+- **The tray icon** shows UTC times.
+- **Every clock in FastMirror is UTC.** The PC's own zone is never consulted, and `TIME_ZONE` is kept only for T4.
+- **Tests:**
+  - with the PC set to New York, Kolkata or UTC, logs and dates give identical results;
+  - a Tiki CPJ closed at 21:40 New York keeps its own business date.
+
+### Phase 2 — date-first layout
+- **Path mapper:** `<yyyy>\<month>\<yyyy-MM-dd>\<TYPE>\<file>` for all files, extra folders included.
+- **Tests:**
+  - update every existing path expectation;
+  - a Wolf StoreClose printed 00:10 on the 13th lands in `…\2026-10-12\PassportReports\`;
+  - root and extra-folder files share the same day folder;
+  - month-end and year-end;
+  - traversal safety kept.
+
+### Phase 3 — packaging configuration
+- **New keys** (section 4).
+- **Checks:**
+  - `STORE_FOLDER` uses safe characters;
+  - the outbox and staging folders don't overlap the source, mirror or state folders;
+  - staging is on the outbox's drive;
+  - `PACKAGE_AT_UTC` is a valid `HH:mm`;
+  - `PACKAGE_FROM_DATE` is a valid date.
+- **Nothing is checked when `PACKAGE_ENABLED=false`.**
+
+### Phase 4 — the zip builder
+- **`DayPackager`:** section 5.2.
+- **Tests:**
+  - same input → byte-identical zip;
+  - the manifest matches the content;
+  - nothing appears in the outbox until it's complete;
+  - a crash after the move is recovered without a rebuild;
+  - a file vanishing mid-build fails cleanly.
+
+### Phase 5 — scheduling and versions
+- **`PackageScheduler`:** section 5.1, with an injected UTC clock.
+- **Tests:**
+  - 15 Oct is not zipped at 16 Oct 07:59Z and is zipped at 08:00Z;
+  - today is never zipped;
+  - 3 days off → 3 days caught up;
+  - `PACKAGE_FROM_DATE` is respected;
+  - a late file → `v2` with all files;
+  - no change → no new version;
+  - a restart → nothing zipped twice.
+
+### Phase 6 — wiring and end-to-end
+- **Wiring:** packaging started from `Application` after copying; failures isolated from copying.
+- **Architecture test:** packaging classes never open a path under the source folders.
+- **End-to-end tests** through the real composition root, for Wolf-style XML + PDFs and Tiki-style files: the clock is moved to 08:00Z the next day, the expected zips appear at the expected outbox paths, and unzipping each gives exactly its folder's files.
+- **Real-data test:** every Wolf file whose business date is 2026-09-24 → 8 XML zips + 1 PDF zip. The XML comes from `XML_0923_0924` and `XML_0925_0926`, because the close reports are written after midnight on the 25th. The PDFs are the 24 Sept 13:15 ShiftClose plus the 25 Sept 00:05 ShiftClose and StoreClose. Each zip's file count must equal the number of files carrying that business date and type.
+- **`OUTBOX_KEEP_DAYS` clean-up.**
+- **Tray and stats:** the tray shows "Last packaged: 2026-10-14 (9 zips)"; the stats line counts `PACKAGED=n`.
+
+### Phase 7 — examples, guide and release
+- **`.env` examples:** `env.template`, `verifone-tiki.env`, `passport-wolf.env`, all with packaging on.
+- **Setup guide in the README:**
+  - FastMirror;
+  - the S3 agent's two `.env` lines;
+  - the AWS key's permissions;
+  - start-up with Task Scheduler.
+- **Release:**
+  - `HOR-Software\automation\DESIGN.md` section 2 rewritten to this layout;
+  - `architecture.mmd` box 3 updated;
+  - `FastMirror.exe` rebuilt;
+  - a test run on this PC with a copy of real Wolf and Tiki files.
+
+---
+
+## 7. Acceptance criteria
+
+The store side is done when all of these hold:
+
+1. **Wolf:** from the real files, FastMirror produces **8 XML zips + 1 PDF zip** for business day 2026-09-24. That includes the close reports and the StoreClose written after midnight on the 25th. Each zip's manifest lists exactly the files in its mirror folder.
+2. **Tiki:** from the sample files, each report and the CPJ land in their own day/type folder and their own zip.
+3. **A day is zipped at its due time** (08:00Z the next day), never earlier, and exactly once unless a late file arrives (`v2`).
+4. **The S3 agent,** with only `WATCH_FOLDER` and `S3_FOLDER` set, uploads every zip to `pos-raw/<store>/<yyyy>/<month>/<date>/<TYPE>/…`, with no half-written uploads.
+5. **Every time** in logs, ledgers and manifests ends in `Z`; every business date equals the POS's own.
+6. **The POS is never disturbed:** the read-only safety tests pass, and no packaging class touches a source folder.
+7. **`gradlew build` passes** with all tests.

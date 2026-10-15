@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.handsoffretail.fastmirror.config.MirrorConfig;
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import com.handsoffretail.fastmirror.entity.Selection;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -49,9 +48,9 @@ class ArchiveFileFilterImplTest {
     @Test
     @DisplayName("a root file with a selected prefix goes to its upper-case prefix folder")
     void selectedPrefix() {
-        assertEquals(Optional.of(new Selection("CPJ", GroupBy.DATE)), select("CPJ432.xml"));
-        assertEquals(Optional.of(new Selection("HRS", GroupBy.DATE)), select("hrs7.xml"));
-        assertEquals(Optional.of(new Selection("CPJ", GroupBy.DATE)), select("cPj1.XmL"));
+        assertEquals(Optional.of(new Selection("CPJ")), select("CPJ432.xml"));
+        assertEquals(Optional.of(new Selection("HRS")), select("hrs7.xml"));
+        assertEquals(Optional.of(new Selection("CPJ")), select("cPj1.XmL"));
     }
 
     @ParameterizedTest
@@ -73,14 +72,6 @@ class ArchiveFileFilterImplTest {
     }
 
     @Test
-    @DisplayName("GROUP_BY applies to root files")
-    void groupByMonthForRoot() {
-        values.put(MirrorConfig.KEY_GROUP_BY, "month");
-
-        assertEquals(Optional.of(new Selection("CPJ", GroupBy.MONTH)), select("CPJ1.xml"));
-    }
-
-    @Test
     @DisplayName("the extension list can be changed")
     void configurableExtensions() {
         values.put(MirrorConfig.KEY_INCLUDE_EXTENSIONS, "xml, .txt");
@@ -90,17 +81,18 @@ class ArchiveFileFilterImplTest {
     }
 
     @Test
-    @DisplayName("an included subfolder selects pdf files with no prefix filter, always by month")
-    void subfolderFiles() {
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals");
+    @DisplayName("an included folder selects pdf files with no prefix filter")
+    void subfolderFiles() throws Exception {
+        final Path journals = java.nio.file.Files.createDirectories(baseDirectory.resolve("Journals"));
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, journals.toString());
 
         assertEquals(
-                Optional.of(new Selection("Journals", GroupBy.MONTH)),
+                Optional.of(new Selection("Journals")),
                 select("Journals/anything at all.pdf"));
         assertEquals(
-                Optional.of(new Selection("journals", GroupBy.MONTH)),
+                Optional.of(new Selection("Journals")),
                 select("journals/upper.PDF"),
-                "the folder name is taken as it appears in the source");
+                "the folder name is taken as configured");
         assertEquals(Optional.empty(), select("Journals/CPJ1.xml"), "xml is not a subfolder extension");
         assertEquals(Optional.empty(), select("Journals/deeper/x.pdf"), "nested folders are ignored");
         assertEquals(Optional.empty(), select("Other/x.pdf"), "a folder not listed is ignored");

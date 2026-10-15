@@ -1,7 +1,6 @@
 package com.handsoffretail.fastmirror.service.implementation;
 
 import com.handsoffretail.fastmirror.config.MirrorConfig;
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import com.handsoffretail.fastmirror.entity.Selection;
 import com.handsoffretail.fastmirror.service.ArchiveFileFilter;
 import com.handsoffretail.fastmirror.service.PathFilter;
@@ -28,7 +27,6 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
     private final PathFilter excludes;
     private final Set<String> prefixes;
     private final Set<String> rootExtensions;
-    private final GroupBy rootGroupBy;
     private final Set<String> subfolderExtensions;
     private final LocalDate copyFromDate;
 
@@ -40,7 +38,6 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
         this.excludes = Objects.requireNonNull(excludes, "excludes");
         this.prefixes = Set.copyOf(config.includePrefixes());
         this.rootExtensions = Set.copyOf(config.includeExtensions());
-        this.rootGroupBy = config.groupBy();
         this.subfolderExtensions = Set.copyOf(config.subfolderExtensions());
         this.copyFromDate = config.copyFromDate();
         for (final String name : config.includeSubfolders()) {
@@ -78,7 +75,7 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
         if (!prefixes.contains(prefix)) {
             return Optional.empty();
         }
-        return Optional.of(new Selection(prefix, rootGroupBy));
+        return Optional.of(new Selection(prefix));
     }
 
     private Optional<Selection> selectSubfolderFile(String folder, String name) {
@@ -86,9 +83,8 @@ public final class ArchiveFileFilterImpl implements ArchiveFileFilter {
                 || !hasExtension(name, subfolderExtensions)) {
             return Optional.empty();
         }
-        // The folder name as it appears in the source, so the mirror matches what the operator sees.
-        // Subfolder files are always grouped by month.
-        return Optional.of(new Selection(folder, GroupBy.MONTH));
+        // The folder name as configured, so the mirror matches what the operator sees.
+        return Optional.of(new Selection(subfolders.get(folder.toLowerCase(Locale.ROOT))));
     }
 
     private static boolean hasExtension(String name, Set<String> extensions) {

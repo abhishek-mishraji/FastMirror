@@ -1,7 +1,7 @@
 package com.handsoffretail.fastmirror.service;
 
 /**
- * The Windows system-tray presence of a running agent (SRS 9.11).
+ * The Windows system-tray presence of a running agent.
  *
  * <p>Tells a person at the machine three things without opening a log: that FastMirror is running,
  * where it is copying from and to, and how to stop it.

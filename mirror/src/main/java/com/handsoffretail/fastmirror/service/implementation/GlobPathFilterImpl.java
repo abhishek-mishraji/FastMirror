@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Excludes paths whose <em>file name</em> matches any configured glob (FR-18).
+ * Excludes paths whose <em>file name</em> matches any configured glob ({@code EXCLUDE_PATTERNS}).
  *
  * <p>Matching is deliberately against the file name alone, not the whole path, so that a pattern
  * such as {@code *.tmp} behaves the same at every depth of the tree.

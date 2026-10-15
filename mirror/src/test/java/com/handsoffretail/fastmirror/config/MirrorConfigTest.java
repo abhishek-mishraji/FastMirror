@@ -12,7 +12,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import com.handsoffretail.fastmirror.entity.DateSource;
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import java.util.List;
 import java.time.LocalDate;
 import java.util.Map;
@@ -259,7 +258,6 @@ class MirrorConfigTest {
         final MirrorConfig config = load();
 
         assertEquals(List.of("xml"), config.includeExtensions(), "INCLUDE_EXTENSIONS");
-        assertEquals(GroupBy.DATE, config.groupBy(), "GROUP_BY");
         assertEquals(List.of(), config.includeSubfolders(), "INCLUDE_SUBFOLDERS");
         assertEquals(List.of("pdf"), config.subfolderExtensions(), "SUBFOLDER_EXTENSIONS");
         assertEquals(null, config.copyFromDate(), "COPY_FROM_DATE");
@@ -312,9 +310,10 @@ class MirrorConfigTest {
 
     @Test
     @DisplayName("no prefixes but a subfolder is allowed, with a warning")
-    void subfoldersOnly() {
+    void subfoldersOnly() throws IOException {
         values.remove(MirrorConfig.KEY_INCLUDE_PREFIXES);
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals");
+        final Path reports = Files.createDirectories(baseDirectory.resolve("PassportReports"));
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, reports.toString());
 
         final MirrorConfig config = load();
 
@@ -343,32 +342,25 @@ class MirrorConfigTest {
         assertThrows(ConfigException.class, this::load);
     }
 
-    @Test
-    @DisplayName("GROUP_BY accepts DATE or MONTH in any case, and nothing else")
-    void groupBy() {
-        values.put(MirrorConfig.KEY_GROUP_BY, "month");
-        assertEquals(GroupBy.MONTH, load().groupBy());
-
-        values.put(MirrorConfig.KEY_GROUP_BY, "WEEK");
-        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
-        assertTrue(thrown.getMessage().contains("DATE or MONTH"));
-    }
-
     @ParameterizedTest
-    @ValueSource(strings = {"..", ".", "a/b", "a\\b", "C:"})
-    @DisplayName("INCLUDE_SUBFOLDERS accepts only plain folder names")
+    @ValueSource(strings = {"Journals", "..", ".", "a/b", "a\\b", "C:"})
+    @DisplayName("INCLUDE_SUBFOLDERS accepts only full paths, and says so with an example")
     void rejectsBadSubfolder(String name) {
         values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, name);
 
-        assertThrows(ConfigException.class, this::load);
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains("Z:/PassportReports"), thrown.getMessage());
     }
 
     @Test
-    @DisplayName("subfolder names are de-duplicated ignoring case, keeping the first spelling")
-    void subfoldersAreDeduplicated() {
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals, journals, Reports");
+    @DisplayName("a whole drive is not a folder")
+    void rejectsWholeDrive() {
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, baseDirectory.getRoot().toString());
 
-        assertEquals(List.of("Journals", "Reports"), load().includeSubfolders());
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains("whole drive"), thrown.getMessage());
     }
 
     @Test
@@ -531,11 +523,11 @@ class MirrorConfigTest {
     @DisplayName("INCLUDE_SUBFOLDERS takes a full path to a folder anywhere, named by its last part")
     void externalSubfolder() throws IOException {
         final Path reports = Files.createDirectories(baseDirectory.resolve("Z").resolve("PassportReports"));
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals, " + reports);
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, reports.toString());
 
         final MirrorConfig config = load();
 
-        assertEquals(List.of("Journals", "PassportReports"), config.includeSubfolders());
+        assertEquals(List.of("PassportReports"), config.includeSubfolders());
         assertEquals(Map.of("PassportReports", reports.toRealPath()), config.externalSubfolders());
     }
 
@@ -560,15 +552,16 @@ class MirrorConfigTest {
     @Test
     @DisplayName("two folders with the same name are rejected, since the name is their mirror folder")
     void externalSubfolderNameClash() throws IOException {
-        final Path journals = Files.createDirectories(baseDirectory.resolve("elsewhere").resolve("Journals"));
-        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, "Journals, " + journals);
+        final Path first = Files.createDirectories(baseDirectory.resolve("one").resolve("Reports"));
+        final Path second = Files.createDirectories(baseDirectory.resolve("two").resolve("reports"));
+        values.put(MirrorConfig.KEY_INCLUDE_SUBFOLDERS, first + ", " + second);
 
         final ConfigException thrown = assertThrows(ConfigException.class, this::load);
 
         assertTrue(thrown.getMessage().contains("two folders named"), thrown.getMessage());
     }
 
-    // ------------------------------------------------------------------ state folder and retired keys
+    // ------------------------------------------------------------------ state folder
 
     @Test
     @DisplayName("a state folder inside the source folder is rejected")
@@ -586,19 +579,6 @@ class MirrorConfigTest {
         values.put(MirrorConfig.KEY_STATE_FOLDER, mirrorRoot.resolve("state").toString());
 
         assertThrows(ConfigException.class, this::load);
-    }
-
-    @Test
-    @DisplayName("retired v2 keys produce a warning, not an error")
-    void retiredKeysWarn() {
-        values.put("SWEEP_INTERVAL_MS", "500");
-        values.put("CONTENT_VERIFY", "true");
-
-        final List<String> warnings = load().warnings();
-
-        assertEquals(2, warnings.size(), warnings.toString());
-        assertTrue(warnings.get(0).contains("SWEEP_INTERVAL_MS"));
-        assertTrue(warnings.get(1).contains("CONTENT_VERIFY"));
     }
 
     @Test

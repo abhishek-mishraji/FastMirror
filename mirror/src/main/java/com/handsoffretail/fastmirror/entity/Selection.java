@@ -7,14 +7,12 @@ import java.util.Objects;
  *
  * @param destinationFolder the first folder below the mirror root: the upper-case prefix for a root
  *                          file ({@code CPJ}), or the subfolder name for a subfolder file
- *                          ({@code Journals})
- * @param groupBy           the grouping below {@code <yyyy>/<month>}
+ *                          ({@code PassportReports})
  */
-public record Selection(String destinationFolder, GroupBy groupBy) {
+public record Selection(String destinationFolder) {
 
     public Selection {
         Objects.requireNonNull(destinationFolder, "destinationFolder");
-        Objects.requireNonNull(groupBy, "groupBy");
         if (destinationFolder.isBlank()) {
             throw new IllegalArgumentException("destinationFolder must not be blank");
         }

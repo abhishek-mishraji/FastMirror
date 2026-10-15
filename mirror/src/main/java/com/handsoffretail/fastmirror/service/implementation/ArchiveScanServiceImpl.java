@@ -105,9 +105,7 @@ public final class ArchiveScanServiceImpl implements ScanService {
             return;
         }
         for (final String subfolder : config.includeSubfolders()) {
-            final Path external = config.externalSubfolders().get(subfolder);
-            final Path directory =
-                    external != null ? external : config.sourceFolder().resolve(subfolder);
+            final Path directory = config.externalSubfolders().get(subfolder);
             if (!Files.isDirectory(directory)) {
                 if (reportedMissing.add(subfolder)) {
                     logger.warn(

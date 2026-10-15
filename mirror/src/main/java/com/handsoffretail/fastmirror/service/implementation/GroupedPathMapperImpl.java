@@ -1,6 +1,5 @@
 package com.handsoffretail.fastmirror.service.implementation;
 
-import com.handsoffretail.fastmirror.entity.GroupBy;
 import com.handsoffretail.fastmirror.entity.Selection;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import java.nio.file.Path;
@@ -12,7 +11,7 @@ import java.util.Objects;
 import java.util.TreeMap;
 
 /**
- * Maps a selected source file to {@code <folder>/<yyyy>/<month>/[<yyyy-MM-dd>/]<name>}.
+ * Maps a selected source file to {@code <folder>/<yyyy>/<month>/<yyyy-MM-dd>/<name>}.
  *
  * <p>Every mapping is checked for containment, so nothing in a file or folder name can produce a
  * target outside the mirror root. That check is not decoration: a path that escaped the mirror
@@ -68,15 +67,13 @@ public final class GroupedPathMapperImpl implements PathMapper {
         Objects.requireNonNull(relativeSource, "relativeSource");
         Objects.requireNonNull(fileDate, "fileDate");
 
-        Path target =
+        final Path target =
                 Path.of(
                         selection.destinationFolder(),
                         String.valueOf(fileDate.getYear()),
-                        monthName(fileDate));
-        if (selection.groupBy() == GroupBy.DATE) {
-            target = target.resolve(fileDate.toString()); // ISO yyyy-MM-dd
-        }
-        target = target.resolve(relativeSource.getFileName().toString());
+                        monthName(fileDate),
+                        fileDate.toString(), // ISO yyyy-MM-dd
+                        relativeSource.getFileName().toString());
 
         // Validates containment; the relative form is what the job carries.
         toTarget(target);
