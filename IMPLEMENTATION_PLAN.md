@@ -1,7 +1,7 @@
 # FastMirror — Implementation Plan (store side)
 
 **Date:** 2026-10-15
-**Status:** fresh plan; replaces every earlier FastMirror plan and specification
+**Status:** implemented on 2026-10-15 (phases 0–7, FastMirror 3.0.0); replaces every earlier FastMirror plan and specification
 **Scope:** the store PC: FastMirror, plus how the S3 sync agent is set up next to it. The back end (S3 → PostgreSQL → dashboard) is designed in `HOR-Software\automation\DESIGN.md`.
 
 ---
@@ -179,6 +179,8 @@ Packaging runs at start-up and then once a minute. It checks every day folder D 
 | no change | nothing |
 
 Today is never zipped.
+
+**After a start,** packaging waits until copying has caught up: the stability wait plus two scans, and an empty copy queue. Otherwise a day whose files were still being copied after the agent was off would be zipped half-copied and then again as `v2`. (Added during implementation.)
 
 ### 5.2 How one zip is built
 

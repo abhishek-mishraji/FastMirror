@@ -24,18 +24,43 @@ class EnvExamplesTest {
     @TempDir Path base;
     @TempDir Path source;
     @TempDir Path mirror;
+    @TempDir Path outputs;
 
     /** Reads a shipped file the way the agent does, beside an exe in {@code base}. */
     private Map<String, String> read(String fileName) throws IOException {
-        Files.copy(EXAMPLES.resolve(fileName), base.resolve(".env"));
+        return read(EXAMPLES.resolve(fileName));
+    }
+
+    private Map<String, String> read(Path file) throws IOException {
+        Files.copy(file, base.resolve(".env"));
         return new HashMap<>(new EnvFileReader(base).fileValues());
     }
 
-    /** The folders are specific to a store PC, so the test points them at temporary ones. */
+    /**
+     * The folders are specific to a store PC, so the test points them at temporary ones. Nothing
+     * is ever created at the shipped paths.
+     */
     private MirrorConfig loadWithLocalFolders(Map<String, String> values) {
         values.put(MirrorConfig.KEY_SOURCE_FOLDER, source.toString());
         values.put(MirrorConfig.KEY_MIRROR_FOLDER, mirror.toString());
+        if (values.containsKey(MirrorConfig.KEY_OUTBOX_FOLDER)) {
+            values.put(MirrorConfig.KEY_OUTBOX_FOLDER, outputs.resolve("outbox").toString());
+        }
         return MirrorConfig.load(values::get, base);
+    }
+
+    @Test
+    @DisplayName("env.template and .env.example are the same file, and load with packaging on")
+    void template() throws IOException {
+        final Path template = Path.of("..", "packaging", "env.template");
+        assertEquals(Files.readString(template), Files.readString(Path.of("..", ".env.example")));
+
+        final MirrorConfig config = loadWithLocalFolders(read(template));
+
+        assertTrue(config.packagingEnabled());
+        assertEquals("Tiki_8730_IN-47872", config.packaging().storeFolder());
+        assertEquals(java.time.LocalTime.of(8, 0), config.packaging().packageAtUtc());
+        assertEquals(List.of(), config.warnings());
     }
 
     @Test
@@ -48,6 +73,9 @@ class EnvExamplesTest {
         assertEquals(
                 List.of("CPJ", "SUM", "MCM", "ISM", "MSM", "HRS", "FGM", "FCF", "LYT", "TPM"),
                 config.includePrefixes());
+        assertTrue(config.packagingEnabled());
+        assertEquals("Tiki_8730_IN-47872", config.packaging().storeFolder());
+        assertEquals(java.time.LocalTime.of(8, 0), config.packaging().packageAtUtc());
         assertEquals(List.of(), config.warnings());
     }
 
@@ -66,6 +94,9 @@ class EnvExamplesTest {
         assertEquals("*yyyyMMddHHmmss.pdf", config.subfolderFileNameDatePattern().template());
         assertEquals(java.time.LocalTime.of(3, 0), config.businessDayStartsAt());
         assertTrue(config.excludePatterns().contains("UNREADEMAIL*"));
+        assertTrue(config.packagingEnabled());
+        assertEquals("wolf_800_NY-13208", config.packaging().storeFolder());
+        assertEquals(java.time.LocalTime.of(8, 0), config.packaging().packageAtUtc());
         assertEquals(List.of(), config.warnings());
     }
 }
