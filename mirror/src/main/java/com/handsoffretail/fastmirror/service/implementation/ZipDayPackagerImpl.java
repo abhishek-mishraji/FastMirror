@@ -136,6 +136,11 @@ public final class ZipDayPackagerImpl implements DayPackager {
     }
 
     @Override
+    public Instant modified(TypeFolder folder) throws IOException {
+        return Files.getLastModifiedTime(folder.resolveIn(mirrorRoot), LinkOption.NOFOLLOW_LINKS).toInstant();
+    }
+
+    @Override
     public PackageManifest build(FolderContent content, int version, Instant createdAt)
             throws IOException {
         Objects.requireNonNull(content, "content");

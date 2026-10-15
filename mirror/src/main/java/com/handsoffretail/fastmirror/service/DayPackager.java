@@ -28,6 +28,12 @@ public interface DayPackager {
     FolderContent list(TypeFolder folder) throws IOException;
 
     /**
+     * The type folder's own modified time. Adding, removing or replacing a file inside changes it,
+     * so an unchanged time means an unchanged folder, without listing its files.
+     */
+    Instant modified(TypeFolder folder) throws IOException;
+
+    /**
      * Zips {@code content} as version {@code version} and moves it into the outbox.
      *
      * @param createdAt the time written into the manifest; the same files and the same
