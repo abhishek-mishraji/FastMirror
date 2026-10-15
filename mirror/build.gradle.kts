@@ -68,6 +68,8 @@ tasks.register<Jar>("fatJar") {
     manifest {
         attributes["Main-Class"] = "com.handsoffretail.fastmirror.Application"
         attributes["Implementation-Title"] = "FastMirror"
+        // Written into every zip manifest as fastMirrorVersion.
+        attributes["Implementation-Version"] = "3.0.0"
     }
 
     from(sourceSets.main.get().output)

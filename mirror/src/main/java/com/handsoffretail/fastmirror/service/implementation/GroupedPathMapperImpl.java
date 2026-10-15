@@ -1,11 +1,10 @@
 package com.handsoffretail.fastmirror.service.implementation;
 
 import com.handsoffretail.fastmirror.entity.Selection;
+import com.handsoffretail.fastmirror.entity.TypeFolder;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.time.format.TextStyle;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -120,7 +119,7 @@ public final class GroupedPathMapperImpl implements PathMapper {
 
     /** {@code january} ... {@code december}, independent of the PC's language settings. */
     static String monthName(LocalDate date) {
-        return date.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH).toLowerCase(Locale.ROOT);
+        return TypeFolder.monthName(date);
     }
 
     private static Path resolveWithin(Path root, Path relative, String rootName) {
