@@ -183,7 +183,7 @@ class ProducerNonInterferenceTest {
 
             assertEquals(List.of(), producerFailures, "the producer must keep working");
             final String finalContent = Files.readString(file, StandardCharsets.UTF_8);
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJstream.xml", finalContent);
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJstream.xml", finalContent);
         }
     }
 

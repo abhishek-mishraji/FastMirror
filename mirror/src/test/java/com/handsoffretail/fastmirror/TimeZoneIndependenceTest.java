@@ -67,9 +67,9 @@ class TimeZoneIndependenceTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-15/CPJ2026-10-15-600.xml",
-                            "HRS/2026/october/2026-10-15/HRS1.xml",
-                            "SUM/2026/october/2026-10-15/SUM2026-10-15-1.xml"),
+                            "2026/october/2026-10-15/CPJ/CPJ2026-10-15-600.xml",
+                            "2026/october/2026-10-15/HRS/HRS1.xml",
+                            "2026/october/2026-10-15/SUM/SUM2026-10-15-1.xml"),
                     agent.mirroredFiles());
             logFolder = agent.config().logFolder();
         } finally {

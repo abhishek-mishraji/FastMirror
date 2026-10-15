@@ -355,7 +355,7 @@ class AtomicFileCopierImplTest {
     void copiesIntoGroupedFolder() throws Exception {
         final byte[] content = bytes(100);
         writeSource("CPJ432.xml", content);
-        final Path target = Path.of("CPJ", "2026", "october", "2026-10-15", "CPJ432.xml");
+        final Path target = Path.of("2026", "october", "2026-10-15", "CPJ", "CPJ432.xml");
 
         final CopyResult result =
                 copier().copy(new CopyJob(Path.of("CPJ432.xml"), target, LedgerKey.of(Path.of("CPJ432.xml"), 1L, 100L)));

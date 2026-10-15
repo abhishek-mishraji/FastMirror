@@ -76,11 +76,11 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-15/CPJ1.xml",
-                            "HRS/2026/october/2026-10-15/HRS1.xml",
-                            "LYT/2026/october/2026-10-15/LYT1.xml"),
+                            "2026/october/2026-10-15/CPJ/CPJ1.xml",
+                            "2026/october/2026-10-15/HRS/HRS1.xml",
+                            "2026/october/2026-10-15/LYT/LYT1.xml"),
                     agent.mirroredFiles());
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJ1.xml", "CPJ payload");
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJ1.xml", "CPJ payload");
             assertEquals(3L, agent.count(CopyOutcome.COPIED));
         }
     }
@@ -110,7 +110,7 @@ class PosLinkArchiveIntegrationTest {
             agent.scanNow();
             agent.awaitIdle();
 
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJ7.xml", "row0-row1-row2-row3-row4-row5");
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJ7.xml", "row0-row1-row2-row3-row4-row5");
         }
     }
 
@@ -120,7 +120,7 @@ class PosLinkArchiveIntegrationTest {
         try (AgentHarness agent = start()) {
             agent.write("CPJ1.xml", "uploaded once", OCT_15);
             agent.copyStableFiles();
-            final Path target = agent.target("CPJ/2026/october/2026-10-15/CPJ1.xml");
+            final Path target = agent.target("2026/october/2026-10-15/CPJ/CPJ1.xml");
             assertTrue(Files.exists(target));
 
             Files.delete(target); // what the S3 agent or a retention job does
@@ -140,13 +140,13 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
             assertEquals(1L, agent.count(CopyOutcome.COPIED));
         }
-        Files.delete(mirrorRoot.resolve("CPJ/2026/october/2026-10-15/CPJ1.xml"));
+        Files.delete(mirrorRoot.resolve("2026/october/2026-10-15/CPJ/CPJ1.xml"));
 
         try (AgentHarness restarted = start()) {
             restarted.write("CPJ2.xml", "second run", OCT_15);
             restarted.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ2.xml"), restarted.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ2.xml"), restarted.mirroredFiles());
             assertEquals(1L, restarted.count(CopyOutcome.COPIED));
         }
     }
@@ -162,8 +162,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-01/CPJ2.xml",
-                            "CPJ/2026/october/2026-10-15/CPJ3.xml"),
+                            "2026/october/2026-10-01/CPJ/CPJ2.xml",
+                            "2026/october/2026-10-15/CPJ/CPJ3.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -177,7 +177,7 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
 
             assertEquals(
-                    List.of("CPJ/2026/october/2026-10-15/CPJ432.xml", "HRS/2027/january/2027-01-02/HRS9.xml"),
+                    List.of("2026/october/2026-10-15/CPJ/CPJ432.xml", "2027/january/2027-01-02/HRS/HRS9.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -196,8 +196,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-15/CPJ1.xml",
-                            "Journals/2026/october/2026-10-15/journal_1015.pdf"),
+                            "2026/october/2026-10-15/CPJ/CPJ1.xml",
+                            "2026/october/2026-10-15/Journals/journal_1015.pdf"),
                     agent.mirroredFiles());
         }
     }
@@ -213,7 +213,7 @@ class PosLinkArchiveIntegrationTest {
             agent.write("CPJ1.xml", "afternoon - new content", OCT_15.plusHours(5));
             agent.copyStableFiles();
 
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJ1.xml", "afternoon - new content");
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJ1.xml", "afternoon - new content");
             assertEquals(1L, agent.count(CopyOutcome.COPIED));
             assertEquals(1L, agent.count(CopyOutcome.REPLACED));
         }
@@ -234,8 +234,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-15/CPJ433.XML",
-                            "CPJ/2026/october/2026-10-15/cpj432.xml"),
+                            "2026/october/2026-10-15/CPJ/CPJ433.XML",
+                            "2026/october/2026-10-15/CPJ/cpj432.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -279,7 +279,7 @@ class PosLinkArchiveIntegrationTest {
             agent.scanNow();
             agent.awaitIdle();
 
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJ1.xml", "held by someone");
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJ1.xml", "held by someone");
         }
     }
 
@@ -297,8 +297,8 @@ class PosLinkArchiveIntegrationTest {
             restarted.copyStableFiles();
 
             assertEquals(1L, restarted.count(CopyOutcome.REPLACED));
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), restarted.mirroredFiles());
-            restarted.awaitMirrored("CPJ/2026/october/2026-10-15/CPJ1.xml", "payload");
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ1.xml"), restarted.mirroredFiles());
+            restarted.awaitMirrored("2026/october/2026-10-15/CPJ/CPJ1.xml", "payload");
         }
     }
 
@@ -320,7 +320,7 @@ class PosLinkArchiveIntegrationTest {
             agent.write("CPJ1.xml", "arrived late", OCT_15);
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ1.xml"), agent.mirroredFiles());
         }
     }
 
@@ -343,8 +343,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/october/2026-10-15/CPJ1.xml",
-                            "CPJ/2026/october/2026-10-15/CPJ2.xml"),
+                            "2026/october/2026-10-15/CPJ/CPJ1.xml",
+                            "2026/october/2026-10-15/CPJ/CPJ2.xml"),
                     agent.mirroredFiles());
             assertEquals(2L, agent.count(CopyOutcome.COPIED), "nothing copied twice across the outage");
         }
@@ -365,7 +365,7 @@ class PosLinkArchiveIntegrationTest {
             agent.write("CPJ2026-09-30-590.xml", "september business day", LocalDateTime.of(2026, 10, 2, 6, 0));
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/september/2026-09-30/CPJ2026-09-30-590.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/september/2026-09-30/CPJ/CPJ2026-09-30-590.xml"), agent.mirroredFiles());
         }
     }
 
@@ -382,7 +382,7 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
 
             assertEquals(
-                    List.of("FGM/2026/september/2026-09-23/FGM3402609230009241533201.xml"),
+                    List.of("2026/september/2026-09-23/FGM/FGM3402609230009241533201.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -395,7 +395,7 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ_summary.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ_summary.xml"), agent.mirroredFiles());
             assertEquals(
                     1L,
                     agent.problemLines().stream().filter(line -> line.contains("No date matching")).count());
@@ -413,7 +413,7 @@ class PosLinkArchiveIntegrationTest {
             agent.write("CPJ2026-10-01-2.xml", "october", LocalDateTime.of(2026, 10, 2, 6, 0));
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-01/CPJ2026-10-01-2.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-01/CPJ/CPJ2026-10-01-2.xml"), agent.mirroredFiles());
         }
     }
 
@@ -432,8 +432,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/september/2026-09-13/CPJ2026-09-13-590.xml",
-                            "Journals/2026/august/2026-08-15/journal_20260815.pdf"),
+                            "2026/august/2026-08-15/Journals/journal_20260815.pdf",
+                            "2026/september/2026-09-13/CPJ/CPJ2026-09-13-590.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -475,9 +475,9 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "FGM/2026/september/2026-09-30/FGM3402610010009241533201.xml",
-                            "MCM/2026/october/2026-10-01/MCM3402610020009421533209.xml",
-                            "PJR/2026/september/2026-09-30/PJR3402610010004181533189.xml"),
+                            "2026/october/2026-10-01/MCM/MCM3402610020009421533209.xml",
+                            "2026/september/2026-09-30/FGM/FGM3402610010009241533201.xml",
+                            "2026/september/2026-09-30/PJR/PJR3402610010004181533189.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -494,7 +494,7 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
 
             assertEquals(
-                    List.of("ILT/2026/september/2026-09-25/ILTACK3402609250942421537747.xml"),
+                    List.of("2026/september/2026-09-25/ILT/ILTACK3402609250942421537747.xml"),
                     agent.mirroredFiles());
             assertEquals(
                     1L,
@@ -522,8 +522,8 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "CPJ/2026/september/2026-09-13/CPJ2026-09-13-590.xml",
-                            "SUM/2025/october/2025-10-04/SUM2025-10-04-252.xml"),
+                            "2025/october/2025-10-04/SUM/SUM2025-10-04-252.xml",
+                            "2026/september/2026-09-13/CPJ/CPJ2026-09-13-590.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -547,7 +547,7 @@ class PosLinkArchiveIntegrationTest {
             agent.copyStableFiles();
 
             assertEquals(
-                    List.of("MCM/2026/october/2026-10-01/MCM3402610010008001533209.xml"),
+                    List.of("2026/october/2026-10-01/MCM/MCM3402610010008001533209.xml"),
                     agent.mirroredFiles());
         }
     }
@@ -582,10 +582,10 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     List.of(
-                            "MCM/2026/september/2026-09-30/MCM3402610010009421533209.xml",
-                            "PassportReports/2026/september/2026-09-30/ShiftClose20260930122815.pdf",
-                            "PassportReports/2026/september/2026-09-30/ShiftClose20261001001002.pdf",
-                            "PassportReports/2026/september/2026-09-30/StoreClose20261001001017.pdf"),
+                            "2026/september/2026-09-30/MCM/MCM3402610010009421533209.xml",
+                            "2026/september/2026-09-30/PassportReports/ShiftClose20260930122815.pdf",
+                            "2026/september/2026-09-30/PassportReports/ShiftClose20261001001002.pdf",
+                            "2026/september/2026-09-30/PassportReports/StoreClose20261001001017.pdf"),
                     agent.mirroredFiles());
         }
 
@@ -611,7 +611,7 @@ class PosLinkArchiveIntegrationTest {
             AgentHarness.setCreated(file, LATE_EVENING_NEW_YORK);
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ1.xml"), agent.mirroredFiles());
         }
     }
 
@@ -623,7 +623,7 @@ class PosLinkArchiveIntegrationTest {
             AgentHarness.setCreated(file, LATE_EVENING_NEW_YORK);
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-16/CPJ1.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-16/CPJ/CPJ1.xml"), agent.mirroredFiles());
         }
     }
 
@@ -650,7 +650,7 @@ class PosLinkArchiveIntegrationTest {
 
             assertEquals(
                     Files.getLastModifiedTime(source),
-                    Files.getLastModifiedTime(agent.target("CPJ/2026/october/2026-10-15/CPJ1.xml")));
+                    Files.getLastModifiedTime(agent.target("2026/october/2026-10-15/CPJ/CPJ1.xml")));
         }
     }
 
@@ -665,7 +665,7 @@ class PosLinkArchiveIntegrationTest {
             Files.delete(source);
             agent.copyStableFiles();
 
-            assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ1.xml"), agent.mirroredFiles());
         }
     }
 
@@ -698,7 +698,7 @@ class PosLinkArchiveIntegrationTest {
             writeTo(journals, "j1.pdf", "late arrival", OCT_15);
             agent.copyStableFiles();
 
-            assertEquals(List.of("Journals/2026/october/2026-10-15/j1.pdf"), agent.mirroredFiles());
+            assertEquals(List.of("2026/october/2026-10-15/Journals/j1.pdf"), agent.mirroredFiles());
         }
     }
 

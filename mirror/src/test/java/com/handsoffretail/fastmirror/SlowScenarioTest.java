@@ -55,7 +55,7 @@ class SlowScenarioTest {
             agent.scanNow();
             agent.advancePastStability();
 
-            final Path target = agent.target("CPJ/2026/october/2026-10-15/CPJbig.xml");
+            final Path target = agent.target("2026/october/2026-10-15/CPJ/CPJbig.xml");
             final Set<Long> observedSizes = new ConcurrentSkipListSet<>();
             final AtomicBoolean polling = new AtomicBoolean(true);
 
@@ -81,7 +81,7 @@ class SlowScenarioTest {
             reader.start();
 
             agent.scanNow();
-            agent.awaitMirrored("CPJ/2026/october/2026-10-15/CPJbig.xml", content);
+            agent.awaitMirrored("2026/october/2026-10-15/CPJ/CPJbig.xml", content);
 
             polling.set(false);
             reader.join(5_000L);

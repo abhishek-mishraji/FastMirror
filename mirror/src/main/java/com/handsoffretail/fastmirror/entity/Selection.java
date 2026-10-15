@@ -5,16 +5,16 @@ import java.util.Objects;
 /**
  * Why a source file is copied, and therefore where it goes.
  *
- * @param destinationFolder the first folder below the mirror root: the upper-case prefix for a root
- *                          file ({@code CPJ}), or the subfolder name for a subfolder file
- *                          ({@code PassportReports})
+ * @param typeFolder the type folder inside the business day's folder: the upper-case prefix
+ *                   for a root file ({@code CPJ}), or the folder name for a file from an
+ *                   extra folder ({@code PassportReports})
  */
-public record Selection(String destinationFolder) {
+public record Selection(String typeFolder) {
 
     public Selection {
-        Objects.requireNonNull(destinationFolder, "destinationFolder");
-        if (destinationFolder.isBlank()) {
-            throw new IllegalArgumentException("destinationFolder must not be blank");
+        Objects.requireNonNull(typeFolder, "typeFolder");
+        if (typeFolder.isBlank()) {
+            throw new IllegalArgumentException("typeFolder must not be blank");
         }
     }
 }

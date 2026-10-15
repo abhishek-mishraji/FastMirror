@@ -28,7 +28,7 @@ class ApplicationStartupTest {
             agent.write("CPJ9.xml", "the payload", LocalDateTime.of(2026, 3, 9, 12, 0));
             agent.copyStableFiles();
 
-            agent.awaitMirrored("CPJ/2026/march/2026-03-09/CPJ9.xml", "the payload");
+            agent.awaitMirrored("2026/march/2026-03-09/CPJ/CPJ9.xml", "the payload");
         }
     }
 
@@ -46,7 +46,7 @@ class ApplicationStartupTest {
             agent.scanNow();
             agent.awaitIdle();
 
-            agent.awaitMirrored("CPJ/2026/october/2026-10-01/CPJ1.xml", "from before startup");
+            agent.awaitMirrored("2026/october/2026-10-01/CPJ/CPJ1.xml", "from before startup");
         }
     }
 
@@ -87,6 +87,6 @@ class ApplicationStartupTest {
         agent.close();
         agent.close();
 
-        assertEquals(List.of("CPJ/2026/october/2026-10-15/CPJ1.xml"), agent.mirroredFiles());
+        assertEquals(List.of("2026/october/2026-10-15/CPJ/CPJ1.xml"), agent.mirroredFiles());
     }
 }

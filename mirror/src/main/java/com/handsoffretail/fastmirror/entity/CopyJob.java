@@ -8,7 +8,7 @@ import java.util.Objects;
  *
  * @param relativeSource the file's path relative to the source root, e.g. {@code CPJ432.xml}
  * @param relativeTarget where it goes, relative to the mirror root, e.g.
- *                       {@code CPJ/2026/october/2026-10-15/CPJ432.xml}
+ *                       {@code 2026/october/2026-10-15/CPJ/CPJ432.xml}
  * @param key            the ledger entry recorded once the copy is in place
  */
 public record CopyJob(Path relativeSource, Path relativeTarget, LedgerKey key) {

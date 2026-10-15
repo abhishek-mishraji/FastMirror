@@ -10,8 +10,8 @@ C:\Program Files (x86)\CStore Essentials\POS Link\Service\Archive\
         |  sorts them by prefix and creation date, and remembers what it copied
         v
 ...\Mirrored_files\
-    CPJ\2026\october\2026-10-15\CPJ432.xml
-    HRS\2026\october\2026-10-15\HRS007.xml
+    2026\october\2026-10-15\CPJ\CPJ432.xml
+    2026\october\2026-10-15\HRS\HRS007.xml
         |
         |  (separate, existing agent)
         v
@@ -29,9 +29,9 @@ There is one FastMirror per store PC, each with its own `.env`. FastMirror does 
 - the first three letters of the name are in `INCLUDE_PREFIXES` (case does not matter, so `cpj432.xml` counts as `CPJ`), and
 - the extension is in `INCLUDE_EXTENSIONS` (default `xml`).
 
-They go to `<PREFIX>\<year>\<month>\<date>\<name>`. The month is the English name in lower case (`october`) and the date is `2026-10-15`. The prefix folder is always upper case.
+They go to `<year>\<month>\<date>\<PREFIX>\<name>`: business date first, then type, the same layout the outbox and S3 use. The month is the English name in lower case (`october`) and the date is `2026-10-15`. The prefix folder is always upper case.
 
-**Files in other folders** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). Each entry is a full path to a folder anywhere (`Z:/PassportReports`), so one agent can copy a POS that writes to two folders. There is no prefix filter for them; leave files out with `EXCLUDE_PATTERNS`. They go to `<folder name>\<year>\<month>\<date>\<name>`. Only files directly inside the folder are copied; folders nested deeper are ignored.
+**Files in other folders** listed in `INCLUDE_SUBFOLDERS` (none by default) are copied when their extension is in `SUBFOLDER_EXTENSIONS` (default `pdf`). Each entry is a full path to a folder anywhere (`Z:/PassportReports`), so one agent can copy a POS that writes to two folders. There is no prefix filter for them; leave files out with `EXCLUDE_PATTERNS`. They go to `<year>\<month>\<date>\<folder name>\<name>`, beside the XML of the same business day. Only files directly inside the folder are copied; folders nested deeper are ignored.
 
 **The date** that picks the folder comes from one of three places, set per store with `DATE_SOURCE`. The code is the same for every store; only `.env` differs. Ready-made files are in `packaging/env-examples/`.
 
@@ -157,7 +157,7 @@ One file per UTC day under `logs\`, kept for 30 days. Every time in the log is U
 
 ```
 2026-10-15 10:03:07Z [INFO] Initial scan: 412 matching file(s) not yet copied; each is copied once unchanged for 3 minute(s)
-2026-10-15 10:06:08Z [INFO] Copied: CPJ432.xml -> CPJ\2026\october\2026-10-15\CPJ432.xml (2048 bytes)
+2026-10-15 10:06:08Z [INFO] Copied: CPJ432.xml -> 2026\october\2026-10-15\CPJ\CPJ432.xml (2048 bytes)
 2026-10-15 10:06:09Z [INFO] Scan: 412 file(s) stable and queued for copy, 0 still waiting, 412 copied so far
 2026-10-15 10:07:07Z [INFO] Stats (last 60s): COPIED=412
 ```

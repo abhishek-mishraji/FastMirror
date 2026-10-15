@@ -11,7 +11,9 @@ import java.util.Objects;
 import java.util.TreeMap;
 
 /**
- * Maps a selected source file to {@code <folder>/<yyyy>/<month>/<yyyy-MM-dd>/<name>}.
+ * Maps a selected source file to {@code <yyyy>/<month>/<yyyy-MM-dd>/<TYPE>/<name>}: business date
+ * first, then type, the same layout as the outbox and S3. The type is the upper-case prefix of a
+ * root file ({@code PJR}) or the name of an extra folder ({@code PassportReports}).
  *
  * <p>Every mapping is checked for containment, so nothing in a file or folder name can produce a
  * target outside the mirror root. That check is not decoration: a path that escaped the mirror
@@ -67,12 +69,21 @@ public final class GroupedPathMapperImpl implements PathMapper {
         Objects.requireNonNull(relativeSource, "relativeSource");
         Objects.requireNonNull(fileDate, "fileDate");
 
+        // The type is exactly one folder. Containment alone would not catch "../x" here, because
+        // the date folders above it would absorb the climb and leave it inside the mirror.
+        final String type = selection.typeFolder();
+        if (type.equals(".") || type.equals("..") || type.contains("/") || type.contains("\\")
+                || type.contains(":")) {
+            throw new IllegalArgumentException("Type folder must be a single folder name: " + type);
+        }
+
+        // Date first, then type: one business day is one folder, holding one folder per type.
         final Path target =
                 Path.of(
-                        selection.destinationFolder(),
                         String.valueOf(fileDate.getYear()),
                         monthName(fileDate),
                         fileDate.toString(), // ISO yyyy-MM-dd
+                        selection.typeFolder(),
                         relativeSource.getFileName().toString());
 
         // Validates containment; the relative form is what the job carries.

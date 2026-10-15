@@ -10,6 +10,8 @@ import java.time.Month;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class GroupedPathMapperImplTest {
 
@@ -22,25 +24,52 @@ class GroupedPathMapperImplTest {
     }
 
     @Test
-    @DisplayName("<PREFIX>/<yyyy>/<month>/<yyyy-MM-dd>/<name>")
+    @DisplayName("date first, then type: <yyyy>/<month>/<yyyy-MM-dd>/<PREFIX>/<name>")
     void dayFolder() {
         final Path target =
                 mapper.targetFor(
                         new Selection("CPJ"), Path.of("CPJ432.xml"), LocalDate.of(2026, 10, 15));
 
-        assertEquals("CPJ/2026/october/2026-10-15/CPJ432.xml", slashed(target));
+        assertEquals("2026/october/2026-10-15/CPJ/CPJ432.xml", slashed(target));
     }
 
     @Test
-    @DisplayName("a subfolder file keeps only its own name below the day folder")
+    @DisplayName("an extra-folder file keeps only its own name, in its folder's type folder")
     void subfolderFile() {
         final Path target =
                 mapper.targetFor(
-                        new Selection("Journals"),
-                        Path.of("Journals", "j.pdf"),
-                        LocalDate.of(2026, 12, 31));
+                        new Selection("PassportReports"),
+                        Path.of("PassportReports", "StoreClose20261013001017.pdf"),
+                        LocalDate.of(2026, 10, 12));
 
-        assertEquals("Journals/2026/december/2026-12-31/j.pdf", slashed(target));
+        assertEquals(
+                "2026/october/2026-10-12/PassportReports/StoreClose20261013001017.pdf", slashed(target));
+    }
+
+    @Test
+    @DisplayName("root and extra-folder files of one business day share that day's folder")
+    void oneFolderPerDay() {
+        final LocalDate day = LocalDate.of(2026, 10, 12);
+
+        final Path xml = mapper.targetFor(new Selection("PJR"), Path.of("PJR1.xml"), day);
+        final Path pdf =
+                mapper.targetFor(new Selection("PassportReports"), Path.of("PassportReports", "S.pdf"), day);
+
+        assertEquals(xml.getParent().getParent(), pdf.getParent().getParent());
+        assertEquals("2026/october/2026-10-12", slashed(xml.getParent().getParent()));
+    }
+
+    @Test
+    @DisplayName("the month rolls over between 30 September and 1 October")
+    void monthBoundary() {
+        final Selection pjr = new Selection("PJR");
+
+        assertEquals(
+                "2026/september/2026-09-30/PJR/a.xml",
+                slashed(mapper.targetFor(pjr, Path.of("a.xml"), LocalDate.of(2026, 9, 30))));
+        assertEquals(
+                "2026/october/2026-10-01/PJR/b.xml",
+                slashed(mapper.targetFor(pjr, Path.of("b.xml"), LocalDate.of(2026, 10, 1))));
     }
 
     @Test
@@ -63,23 +92,20 @@ class GroupedPathMapperImplTest {
         final Selection cpj = new Selection("CPJ");
 
         assertEquals(
-                "CPJ/2026/december/2026-12-31/CPJ1.xml",
+                "2026/december/2026-12-31/CPJ/CPJ1.xml",
                 slashed(mapper.targetFor(cpj, Path.of("CPJ1.xml"), LocalDate.of(2026, 12, 31))));
         assertEquals(
-                "CPJ/2027/january/2027-01-01/CPJ2.xml",
+                "2027/january/2027-01-01/CPJ/CPJ2.xml",
                 slashed(mapper.targetFor(cpj, Path.of("CPJ2.xml"), LocalDate.of(2027, 1, 1))));
     }
 
-    @Test
-    @DisplayName("a destination folder that would escape the mirror root is rejected")
-    void rejectsEscape() {
+    @ParameterizedTest
+    @ValueSource(strings = {"..", ".", "../x", "../../../../outside", "a/b", "a\\b", "C:"})
+    @DisplayName("a type folder that is not one plain folder name is rejected, so nothing escapes")
+    void rejectsEscape(String type) {
         assertThrows(
                 IllegalArgumentException.class,
-                () ->
-                        mapper.targetFor(
-                                new Selection("../../outside"),
-                                Path.of("x.pdf"),
-                                LocalDate.of(2026, 1, 1)));
+                () -> mapper.targetFor(new Selection(type), Path.of("x.pdf"), LocalDate.of(2026, 1, 1)));
     }
 
     @Test
