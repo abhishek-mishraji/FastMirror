@@ -67,7 +67,8 @@ public final class Application {
     public static void main(String[] args) {
         final Path baseDirectory = baseDirectory();
         final EnvFileReader env = new EnvFileReader(baseDirectory);
-        final Clock clock = Clock.systemDefaultZone();
+        // Every moment is UTC; the PC's own time zone is never consulted.
+        final Clock clock = Clock.systemUTC();
 
         // 1. Logging first, so that every later failure has somewhere to be reported. The agent
         //    runs windowless in production, so a stack trace on a console nobody sees is the same

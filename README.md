@@ -153,13 +153,13 @@ If `INCLUDE_PREFIXES` is empty but `INCLUDE_SUBFOLDERS` is set, only subfolders 
 
 ## Reading the log
 
-One file per day under `logs\`, kept for 30 days:
+One file per UTC day under `logs\`, kept for 30 days. Every time in the log is UTC, marked `Z`:
 
 ```
-2026-10-15 10:03:07 [INFO] Initial scan: 412 matching file(s) not yet copied; each is copied once unchanged for 3 minute(s)
-2026-10-15 10:06:08 [INFO] Copied: CPJ432.xml -> CPJ\2026\october\2026-10-15\CPJ432.xml (2048 bytes)
-2026-10-15 10:06:09 [INFO] Scan: 412 file(s) stable and queued for copy, 0 still waiting, 412 copied so far
-2026-10-15 10:07:07 [INFO] Stats (last 60s): COPIED=412
+2026-10-15 10:03:07Z [INFO] Initial scan: 412 matching file(s) not yet copied; each is copied once unchanged for 3 minute(s)
+2026-10-15 10:06:08Z [INFO] Copied: CPJ432.xml -> CPJ\2026\october\2026-10-15\CPJ432.xml (2048 bytes)
+2026-10-15 10:06:09Z [INFO] Scan: 412 file(s) stable and queued for copy, 0 still waiting, 412 copied so far
+2026-10-15 10:07:07Z [INFO] Stats (last 60s): COPIED=412
 ```
 
 The counters:

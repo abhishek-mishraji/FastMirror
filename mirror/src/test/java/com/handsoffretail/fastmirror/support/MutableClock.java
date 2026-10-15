@@ -18,9 +18,9 @@ public final class MutableClock extends Clock {
         this.zone = Objects.requireNonNull(zone, "zone");
     }
 
-    /** Starts at the real current time, in the PC's time zone. */
+    /** Starts at the real current time, in UTC like the agent's own clock. */
     public static MutableClock systemNow() {
-        return new MutableClock(Instant.now(), ZoneId.systemDefault());
+        return new MutableClock(Instant.now(), java.time.ZoneOffset.UTC);
     }
 
     public void advance(Duration duration) {

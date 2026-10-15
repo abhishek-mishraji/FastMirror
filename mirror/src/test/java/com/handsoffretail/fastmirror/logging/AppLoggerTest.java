@@ -16,6 +16,8 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class AppLoggerTest {
 
@@ -27,9 +29,16 @@ class AppLoggerTest {
     /** A clock the test moves by hand, so no assertion depends on wall-clock time. */
     private static final class MutableClock extends Clock {
         private Instant now;
+        private final ZoneId zone;
 
         MutableClock(Instant start) {
+            this(start, ZONE);
+        }
+
+        /** A clock in another zone, standing in for a PC set to that zone. */
+        MutableClock(Instant start, ZoneId zone) {
             this.now = start;
+            this.zone = zone;
         }
 
         void advance(Duration amount) {
@@ -38,7 +47,7 @@ class AppLoggerTest {
 
         @Override
         public ZoneId getZone() {
-            return ZONE;
+            return zone;
         }
 
         @Override
@@ -74,7 +83,7 @@ class AppLoggerTest {
     }
 
     @Test
-    @DisplayName("lines use the agreed yyyy-MM-dd HH:mm:ss [LEVEL] message format")
+    @DisplayName("lines use the agreed yyyy-MM-dd HH:mm:ssZ [LEVEL] message format, in UTC")
     void writesTheAgreedFormat() throws Exception {
         try (AppLogger logger = new AppLogger(logFolder, new MutableClock(NOON_20TH))) {
             logger.info("FastMirror started: C:\\Gemcom\\bin\\out -> C:\\temp");
@@ -83,8 +92,24 @@ class AppLoggerTest {
 
             assertEquals(1, lines.size());
             assertEquals(
-                    "2026-09-20 12:00:00 [INFO] FastMirror started: C:\\Gemcom\\bin\\out -> C:\\temp",
+                    "2026-09-20 12:00:00Z [INFO] FastMirror started: C:\\Gemcom\\bin\\out -> C:\\temp",
                     lines.get(0));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"America/New_York", "Asia/Kolkata", "UTC"})
+    @DisplayName("the PC's time zone changes nothing: same UTC time, same UTC-day file")
+    void independentOfTheClockZone(String zone) throws Exception {
+        // 20:00 UTC is 16:00 in New York and already 01:30 on the 21st in Kolkata.
+        final Instant evening = Instant.parse("2026-09-20T20:00:00Z");
+        try (AppLogger logger = new AppLogger(logFolder, new MutableClock(evening, ZoneId.of(zone)))) {
+            logger.info("zone check");
+
+            final List<String> lines = awaitLines(fileFor("2026-09-20"), 1);
+
+            assertEquals(List.of("2026-09-20 20:00:00Z [INFO] zone check"), lines);
+            assertEquals(fileFor("2026-09-20"), logger.currentFile());
         }
     }
 
@@ -121,7 +146,7 @@ class AppLoggerTest {
     }
 
     @Test
-    @DisplayName("the log rolls to a new file when the date changes")
+    @DisplayName("the log rolls to a new file when the UTC date changes")
     void rollsOverAtMidnight() throws Exception {
         final MutableClock clock = new MutableClock(NOON_20TH);
         try (AppLogger logger = new AppLogger(logFolder, clock)) {
@@ -134,7 +159,7 @@ class AppLoggerTest {
             final List<String> next = awaitLines(fileFor("2026-09-21"), 1);
 
             assertEquals(1, next.size());
-            assertTrue(next.get(0).startsWith("2026-09-21 01:00:00 [INFO] after midnight"));
+            assertTrue(next.get(0).startsWith("2026-09-21 01:00:00Z [INFO] after midnight"));
             assertEquals(1, Files.readAllLines(fileFor("2026-09-20")).size());
         }
     }
@@ -163,7 +188,7 @@ class AppLoggerTest {
     @DisplayName("appends to an existing file for the same day rather than truncating it")
     void appendsWithinTheSameDay() throws Exception {
         final Path today = fileFor("2026-09-20");
-        Files.writeString(today, "2026-09-20 11:00:00 [INFO] from an earlier run\n");
+        Files.writeString(today, "2026-09-20 11:00:00Z [INFO] from an earlier run\n");
 
         try (AppLogger logger = new AppLogger(logFolder, new MutableClock(NOON_20TH))) {
             logger.info("from this run");

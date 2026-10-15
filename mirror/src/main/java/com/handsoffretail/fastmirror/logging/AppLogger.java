@@ -11,7 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The file log: one rolling file per day, 30 days retained.
+ * The file log: one rolling file per UTC day, 30 days retained.
  *
  * <p>Lines are {@code yyyy-MM-dd HH:mm:ss [LEVEL] message}, matching the existing HOR AWS Sync
  * Agent so an operator reads both the same way.
@@ -43,8 +43,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class AppLogger implements AutoCloseable {
 
+    /** Every time in the log is UTC, marked with Z, whatever the PC's own time zone. */
     private static final DateTimeFormatter TIMESTAMP =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss'Z'").withZone(ZoneOffset.UTC);
     private static final DateTimeFormatter FILE_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final String FILE_PREFIX = "fastmirror-";
     private static final String FILE_SUFFIX = ".log";
@@ -110,6 +111,11 @@ public final class AppLogger implements AutoCloseable {
         submit(LogLevel.ERROR, message, cause);
     }
 
+    /** The UTC date: one log file per UTC day. */
+    private LocalDate today() {
+        return LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
+    }
+
     /** Lines discarded because the queue was full. Zero in normal operation. */
     public long droppedLines() {
         return dropped.get();
@@ -117,7 +123,7 @@ public final class AppLogger implements AutoCloseable {
 
     /** The file currently being written, for the startup log line. */
     public Path currentFile() {
-        return fileFor(LocalDate.now(clock));
+        return fileFor(today());
     }
 
     /**
@@ -155,7 +161,7 @@ public final class AppLogger implements AutoCloseable {
 
     private String render(LogLevel level, String message, Throwable cause) {
         final StringBuilder text = new StringBuilder(128);
-        text.append(LocalDateTime.now(clock).format(TIMESTAMP))
+        text.append(TIMESTAMP.format(clock.instant()))
                 .append(" [")
                 .append(level)
                 .append("] ")
@@ -196,14 +202,14 @@ public final class AppLogger implements AutoCloseable {
 
     private void writeLine(String line) {
         try {
-            final LocalDate today = LocalDate.now(clock);
+            final LocalDate today = today();
             if (writer == null || !today.equals(openFor)) {
                 rollTo(today);
             }
             final long lost = dropped.getAndSet(0L);
             if (lost > 0L) {
                 writer.write(
-                        LocalDateTime.now(clock).format(TIMESTAMP)
+                        TIMESTAMP.format(clock.instant())
                                 + " [" + LogLevel.WARN + "] "
                                 + lost + " log line(s) dropped: the log queue was full."
                                 + " Copy workers were not blocked.");
