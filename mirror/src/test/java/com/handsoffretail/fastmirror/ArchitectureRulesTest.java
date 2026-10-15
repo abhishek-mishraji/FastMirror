@@ -203,8 +203,62 @@ class ArchitectureRulesTest {
         // its own staging file inside the mirror. Bytecode analysis cannot tell which open they
         // belong to, so "no write intent on the SOURCE open" is enforced by keeping all source
         // access in one small reviewable method, and verified behaviourally by
-        // ProducerNonInterferenceTest - if a write option ever reached the source open, the producer's own delete or
-        // write would start failing and those tests would go red.
+        // ProducerNonInterferenceTest - if a write option ever reached the source open, the
+        // producer's own delete or write would start failing and those tests would go red.
+    }
+
+    // ------------------------------------------------------------------ AT-05 packaging
+
+    @Test
+    @DisplayName("AT-05: packaging cannot reach the POS folders: it knows only the mirror and outbox")
+    void at05_packagingNeverTouchesTheSource() {
+        final List<String> packaging =
+                List.of(
+                        ROOT_PACKAGE + ".service.DayPackager",
+                        ROOT_PACKAGE + ".service.PackageLedger",
+                        ROOT_PACKAGE + ".service.PackageScheduler",
+                        ROOT_PACKAGE + ".service.implementation.ZipDayPackagerImpl",
+                        ROOT_PACKAGE + ".service.implementation.DailyPackageSchedulerImpl",
+                        ROOT_PACKAGE + ".service.implementation.FilePackageLedgerImpl",
+                        ROOT_PACKAGE + ".config.PackageConfig",
+                        ROOT_PACKAGE + ".entity.TypeFolder",
+                        ROOT_PACKAGE + ".entity.PackagedFile",
+                        ROOT_PACKAGE + ".entity.FolderContent",
+                        ROOT_PACKAGE + ".entity.PackageManifest",
+                        ROOT_PACKAGE + ".entity.PackageRecord");
+        // The only ways to a POS folder: the configured source and extra folders, the path
+        // mapper that resolves into them, and the copier that opens them.
+        final List<String> bannedTypes =
+                List.of(
+                        ROOT_PACKAGE + ".service.PathMapper",
+                        ROOT_PACKAGE + ".service.FileCopier",
+                        ROOT_PACKAGE + ".service.ScanService",
+                        ROOT_PACKAGE + ".service.implementation.GroupedPathMapperImpl",
+                        COPIER);
+        final List<String> bannedMembers =
+                List.of("sourceFolder", "externalSubfolders", "includeSubfolders");
+
+        final List<String> offenders = new ArrayList<>();
+        int checked = 0;
+        for (final ClassFile type : classes) {
+            if (!packaging.contains(owningClassOf(type))) {
+                continue;
+            }
+            checked++;
+            for (final String banned : bannedTypes) {
+                if (type.referencedTypes().contains(banned)) {
+                    offenders.add(type.binaryName() + " references " + banned);
+                }
+            }
+            for (final String member : bannedMembers) {
+                if (type.references(ROOT_PACKAGE + ".config.MirrorConfig", member)) {
+                    offenders.add(type.binaryName() + " reads MirrorConfig." + member);
+                }
+            }
+        }
+
+        assertTrue(checked >= packaging.size(), "every packaging class must be compiled and checked");
+        assertEquals(List.of(), offenders, "Packaging reads the mirror only, never the POS folders");
     }
 
     // ------------------------------------------------------------------ helpers

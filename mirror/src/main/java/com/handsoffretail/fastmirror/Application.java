@@ -5,12 +5,14 @@ import com.handsoffretail.fastmirror.config.ContentDateFields;
 import com.handsoffretail.fastmirror.config.EnvFileReader;
 import com.handsoffretail.fastmirror.config.FileNameDatePattern;
 import com.handsoffretail.fastmirror.config.MirrorConfig;
+import com.handsoffretail.fastmirror.config.PackageConfig;
 import com.handsoffretail.fastmirror.entity.DateSource;
 import com.handsoffretail.fastmirror.logging.AppLogger;
 import com.handsoffretail.fastmirror.service.ArchiveFileFilter;
 import com.handsoffretail.fastmirror.service.CopyQueue;
 import com.handsoffretail.fastmirror.service.FileCopier;
 import com.handsoffretail.fastmirror.service.FileDateResolver;
+import com.handsoffretail.fastmirror.service.PackageScheduler;
 import com.handsoffretail.fastmirror.service.PathMapper;
 import com.handsoffretail.fastmirror.service.ScanService;
 import com.handsoffretail.fastmirror.service.StabilityTracker;
@@ -20,14 +22,17 @@ import com.handsoffretail.fastmirror.service.implementation.ArchiveFileFilterImp
 import com.handsoffretail.fastmirror.service.implementation.ArchiveScanServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.AtomicFileCopierImpl;
 import com.handsoffretail.fastmirror.service.implementation.CopyQueueImpl;
+import com.handsoffretail.fastmirror.service.implementation.DailyPackageSchedulerImpl;
 import com.handsoffretail.fastmirror.service.implementation.FileCopyLedgerImpl;
 import com.handsoffretail.fastmirror.service.implementation.FileDateResolverImpl;
+import com.handsoffretail.fastmirror.service.implementation.FilePackageLedgerImpl;
 import com.handsoffretail.fastmirror.service.implementation.GlobPathFilterImpl;
 import com.handsoffretail.fastmirror.service.implementation.GroupedPathMapperImpl;
 import com.handsoffretail.fastmirror.service.implementation.LoggingStatsReporterImpl;
 import com.handsoffretail.fastmirror.service.implementation.StabilityTrackerImpl;
 import com.handsoffretail.fastmirror.service.implementation.SystemTrayServiceImpl;
 import com.handsoffretail.fastmirror.service.implementation.ThreadSleeperImpl;
+import com.handsoffretail.fastmirror.service.implementation.ZipDayPackagerImpl;
 import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -39,11 +44,13 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
 
@@ -106,7 +113,11 @@ public final class Application {
                         () -> {
                             handle.stop();
                             System.exit(0);
-                        });
+                        },
+                        handle.packaging()
+                                .<Supplier<Optional<PackageScheduler.LastPackaged>>>map(
+                                        packaging -> packaging::lastPackaged)
+                                .orElse(null));
 
         Runtime.getRuntime()
                 .addShutdownHook(
@@ -170,17 +181,62 @@ public final class Application {
         final ScanService scanner =
                 new ArchiveScanServiceImpl(config, mapper, filter, dates, tracker, ledger, queue, logger);
 
-        final Handle handle = new Handle(config, logger, queue, scanner, stats);
+        // 7. Day packaging, when on. It reads only the mirror, on its own thread, so a packaging
+        //    failure never holds up copying. It starts once copying has caught up after start-up,
+        //    so that a day still being copied is not zipped half-copied.
+        PackageScheduler packaging = null;
+        if (config.packagingEnabled()) {
+            final PackageConfig packageConfig = config.packaging();
+            final FilePackageLedgerImpl packageLedger;
+            try {
+                packageLedger = FilePackageLedgerImpl.open(config.stateFolder(), logger);
+            } catch (final IOException e) {
+                throw new ConfigException(
+                        "The package ledger in " + config.stateFolder() + " could not be read ("
+                                + e.getMessage() + "). Check the folder's permissions.", e);
+            }
+            packaging =
+                    new DailyPackageSchedulerImpl(
+                            new ZipDayPackagerImpl(config.mirrorFolder(), packageConfig),
+                            packageLedger,
+                            packageConfig,
+                            clock,
+                            logger,
+                            record -> stats.recordPackaged(),
+                            clock.instant()
+                                    .plus(Duration.ofMinutes(config.stabilityMinutes()))
+                                    .plusSeconds(2L * config.scanIntervalSeconds()),
+                            () -> queue.pending() == 0);
+        }
 
-        // 7. The first scan starts every file's stability clock. Nothing is copied before the
+        final Handle handle = new Handle(config, logger, queue, scanner, stats, packaging);
+
+        // 8. The first scan starts every file's stability clock. Nothing is copied before the
         //    stability period has passed, not even files that were already there.
         scanner.scan();
 
-        // 8. Periodic scanning and periodic reporting.
+        // 9. Periodic scanning, packaging and reporting.
         scanner.start();
+        if (packaging != null) {
+            packaging.start();
+        }
         handle.startStatsReporting();
 
-        // 9.
+        // 10.
+        if (config.packagingEnabled()) {
+            final PackageConfig packageConfig = config.packaging();
+            logger.info(
+                    "Packaging on: each business day zipped by type at " + packageConfig.packageAtUtc()
+                            + " UTC the next day, into " + packageConfig.storeOutbox()
+                            + " (staging " + packageConfig.stagingFolder()
+                            + (packageConfig.packageFromDate() == null
+                                    ? ""
+                                    : ", from " + packageConfig.packageFromDate())
+                            + (packageConfig.outboxKeepDays() == 0
+                                    ? ", zips kept"
+                                    : ", zips kept " + packageConfig.outboxKeepDays() + " days")
+                            + ")");
+        }
         logger.info(
                 "FastMirror started: " + config.sourceFolder() + " -> " + config.mirrorFolder()
                         + " (prefixes=" + String.join(",", config.includePrefixes())
@@ -207,6 +263,7 @@ public final class Application {
         private final CopyQueue queue;
         private final ScanService scanner;
         private final StatsReporter stats;
+        private final PackageScheduler packaging;
         private final ScheduledExecutorService statsScheduler;
         private final CountDownLatch stopped = new CountDownLatch(1);
         private final AtomicBoolean stopping = new AtomicBoolean();
@@ -216,12 +273,14 @@ public final class Application {
                 AppLogger logger,
                 CopyQueue queue,
                 ScanService scanner,
-                StatsReporter stats) {
+                StatsReporter stats,
+                PackageScheduler packaging) {
             this.config = config;
             this.logger = logger;
             this.queue = queue;
             this.scanner = scanner;
             this.stats = stats;
+            this.packaging = packaging;
             this.statsScheduler =
                     Executors.newSingleThreadScheduledExecutor(
                             runnable -> {
@@ -277,6 +336,20 @@ public final class Application {
             scanner.scan();
         }
 
+        /** Day packaging, if it is on. */
+        public Optional<PackageScheduler> packaging() {
+            return Optional.ofNullable(packaging);
+        }
+
+        /**
+         * Runs one packaging check on the calling thread.
+         *
+         * @return the zips moved into the outbox; 0 when packaging is off
+         */
+        public int packageNow() {
+            return packaging == null ? 0 : packaging.checkNow();
+        }
+
         /** Stops everything in the reverse of the order it started. */
         public void stop() {
             if (!stopping.compareAndSet(false, true)) {
@@ -284,6 +357,10 @@ public final class Application {
             }
             try {
                 statsScheduler.shutdownNow();
+                if (packaging != null) {
+                    // A zip being built is finished, so staging holds no half-built zip.
+                    packaging.close();
+                }
                 scanner.stop();
 
                 // In-flight copies get a grace period. Each one holds a handle on a producer file,

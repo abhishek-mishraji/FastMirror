@@ -77,6 +77,38 @@ class SystemTrayServiceImplTest {
     }
 
     @Test
+    @DisplayName("the packaging line shows the last packaged business day and its zips")
+    void packagedLine() {
+        assertEquals(
+                "Last packaged: 2026-10-14 (9 zips)",
+                SystemTrayServiceImpl.packagedLine(
+                        java.util.Optional.of(
+                                new com.handsoffretail.fastmirror.service.PackageScheduler.LastPackaged(
+                                        java.time.LocalDate.of(2026, 10, 14), 9))));
+        assertEquals(
+                "Last packaged: 2026-10-14 (1 zip)",
+                SystemTrayServiceImpl.packagedLine(
+                        java.util.Optional.of(
+                                new com.handsoffretail.fastmirror.service.PackageScheduler.LastPackaged(
+                                        java.time.LocalDate.of(2026, 10, 14), 1))));
+        assertEquals("Last packaged: none yet", SystemTrayServiceImpl.packagedLine(java.util.Optional.empty()));
+    }
+
+    @Test
+    @DisplayName("the stats line counts zips as PACKAGED")
+    void statsLineCountsPackaged() {
+        final Map<CopyOutcome, Long> counts = new EnumMap<>(CopyOutcome.class);
+        counts.put(CopyOutcome.COPIED, 952L);
+
+        assertEquals(
+                "Stats (last 60s): COPIED=952 PACKAGED=9",
+                LoggingStatsReporterImpl.format(new CopyStats(counts, 9L), "last 60s"));
+        assertEquals(
+                "Stats (last 60s): PACKAGED=1",
+                LoggingStatsReporterImpl.format(new CopyStats(Map.of(), 1L), "last 60s"));
+    }
+
+    @Test
     @DisplayName("very long folder paths are shortened to fit the Windows tooltip limit")
     void tooltipIsTruncatedForLongPaths() throws Exception {
         final Path deepSource =

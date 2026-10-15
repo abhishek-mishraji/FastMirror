@@ -15,6 +15,9 @@ public interface StatsReporter {
     /** Record one finished copy job. Called from a copy worker, so it must be cheap and non-blocking. */
     void record(CopyResult result);
 
+    /** Record one zip moved into the outbox. */
+    void recordPackaged();
+
     /** Emit one summary line for the window just ended and start a new window. */
     void report();
 

@@ -24,6 +24,8 @@ public final class LoggingStatsReporterImpl implements StatsReporter {
 
     private final Map<CopyOutcome, LongAdder> windowCounts = new EnumMap<>(CopyOutcome.class);
     private final Map<CopyOutcome, LongAdder> lifetimeCounts = new EnumMap<>(CopyOutcome.class);
+    private final LongAdder windowPackaged = new LongAdder();
+    private final LongAdder lifetimePackaged = new LongAdder();
 
     public LoggingStatsReporterImpl(AppLogger logger, long intervalMs) {
         this.logger = Objects.requireNonNull(logger, "logger");
@@ -42,9 +44,16 @@ public final class LoggingStatsReporterImpl implements StatsReporter {
     }
 
     @Override
+    public void recordPackaged() {
+        windowPackaged.increment();
+        lifetimePackaged.increment();
+    }
+
+    @Override
     public void report() {
         final CopyStats stats = snapshot();
         windowCounts.values().forEach(LongAdder::reset);
+        windowPackaged.reset();
         if (stats.isEmpty()) {
             // Nothing happened. A line saying so every minute would bury the lines that matter.
             return;
@@ -54,12 +63,12 @@ public final class LoggingStatsReporterImpl implements StatsReporter {
 
     @Override
     public CopyStats snapshot() {
-        return snapshotOf(windowCounts);
+        return snapshotOf(windowCounts, windowPackaged);
     }
 
     @Override
     public CopyStats lifetime() {
-        return snapshotOf(lifetimeCounts);
+        return snapshotOf(lifetimeCounts, lifetimePackaged);
     }
 
     /** Renders the summary line. Public so the shutdown summary can reuse it. */
@@ -72,12 +81,15 @@ public final class LoggingStatsReporterImpl implements StatsReporter {
         for (final Map.Entry<CopyOutcome, Long> entry : stats.counts().entrySet()) {
             line.append(' ').append(entry.getKey()).append('=').append(entry.getValue());
         }
+        if (stats.packaged() > 0L) {
+            line.append(" PACKAGED=").append(stats.packaged());
+        }
         return line.toString();
     }
 
-    private static CopyStats snapshotOf(Map<CopyOutcome, LongAdder> counts) {
+    private static CopyStats snapshotOf(Map<CopyOutcome, LongAdder> counts, LongAdder packaged) {
         final Map<CopyOutcome, Long> values = new EnumMap<>(CopyOutcome.class);
         counts.forEach((outcome, adder) -> values.put(outcome, adder.sum()));
-        return new CopyStats(values);
+        return new CopyStats(values, packaged.sum());
     }
 }

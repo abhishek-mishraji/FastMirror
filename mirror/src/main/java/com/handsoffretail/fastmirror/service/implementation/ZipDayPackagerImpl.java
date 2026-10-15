@@ -205,6 +205,47 @@ public final class ZipDayPackagerImpl implements DayPackager {
         }
     }
 
+    @Override
+    public int removeZipsBefore(LocalDate cutoff) throws IOException {
+        Objects.requireNonNull(cutoff, "cutoff");
+        final Path storeOutbox = config.storeOutbox();
+        int removed = 0;
+        for (final Path year : directories(storeOutbox)) {
+            for (final Path month : directories(year)) {
+                for (final Path day : directories(month)) {
+                    final LocalDate date = dayFolderDate(year, month, day);
+                    if (date == null || !date.isBefore(cutoff)) {
+                        continue;
+                    }
+                    for (final Path type : directories(day)) {
+                        final String prefix =
+                                config.storeFolder() + "_" + type.getFileName() + "_" + date + "_v";
+                        try (DirectoryStream<Path> zips = Files.newDirectoryStream(type, prefix + "*.zip")) {
+                            for (final Path zip : zips) {
+                                Files.deleteIfExists(zip);
+                                removed++;
+                            }
+                        }
+                        deleteIfEmpty(type);
+                    }
+                    deleteIfEmpty(day);
+                }
+                deleteIfEmpty(month);
+            }
+            deleteIfEmpty(year);
+        }
+        return removed;
+    }
+
+    private static void deleteIfEmpty(Path directory) throws IOException {
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {
+            if (entries.iterator().hasNext()) {
+                return;
+            }
+        }
+        Files.deleteIfExists(directory);
+    }
+
     // ---------------------------------------------------------------- writing
 
     private PackageManifest write(Path part, FolderContent content, int version, Instant createdAt)

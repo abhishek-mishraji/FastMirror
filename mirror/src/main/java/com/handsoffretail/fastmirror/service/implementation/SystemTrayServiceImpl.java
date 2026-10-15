@@ -4,6 +4,7 @@ import com.handsoffretail.fastmirror.config.MirrorConfig;
 import com.handsoffretail.fastmirror.entity.CopyOutcome;
 import com.handsoffretail.fastmirror.entity.CopyStats;
 import com.handsoffretail.fastmirror.logging.AppLogger;
+import com.handsoffretail.fastmirror.service.PackageScheduler;
 import com.handsoffretail.fastmirror.service.StatsReporter;
 import com.handsoffretail.fastmirror.service.TrayService;
 import java.awt.AWTException;
@@ -22,11 +23,13 @@ import java.awt.image.BufferedImage;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
 
@@ -69,10 +72,14 @@ public final class SystemTrayServiceImpl implements TrayService {
     private final AppLogger logger;
     private final Runnable onExit;
 
+    /** The last packaged day, or {@code null} when packaging is off. */
+    private final Supplier<Optional<PackageScheduler.LastPackaged>> lastPackaged;
+
     private final AtomicBoolean exitRequested = new AtomicBoolean();
 
     private volatile TrayIcon icon;
     private volatile MenuItem statusItem;
+    private volatile MenuItem packagedItem;
     private volatile ScheduledExecutorService refresher;
 
     /**
@@ -82,10 +89,24 @@ public final class SystemTrayServiceImpl implements TrayService {
      */
     public SystemTrayServiceImpl(
             MirrorConfig config, StatsReporter stats, AppLogger logger, Runnable onExit) {
+        this(config, stats, logger, onExit, null);
+    }
+
+    /**
+     * @param lastPackaged the last packaged day, shown in the menu; {@code null} when packaging is
+     *                     off, which leaves the line out
+     */
+    public SystemTrayServiceImpl(
+            MirrorConfig config,
+            StatsReporter stats,
+            AppLogger logger,
+            Runnable onExit,
+            Supplier<Optional<PackageScheduler.LastPackaged>> lastPackaged) {
         this.config = Objects.requireNonNull(config, "config");
         this.stats = Objects.requireNonNull(stats, "stats");
         this.logger = Objects.requireNonNull(logger, "logger");
         this.onExit = Objects.requireNonNull(onExit, "onExit");
+        this.lastPackaged = lastPackaged;
     }
 
     @Override
@@ -172,6 +193,13 @@ public final class SystemTrayServiceImpl implements TrayService {
         status.setEnabled(false);
         menu.add(status);
 
+        MenuItem packaged = null;
+        if (lastPackaged != null) {
+            packaged = new MenuItem(packagedLine(lastPackaged.get()));
+            packaged.setEnabled(false);
+            menu.add(packaged);
+        }
+
         final MenuItem from = new MenuItem("From:  " + config.sourceFolder());
         from.setEnabled(false);
         menu.add(from);
@@ -199,6 +227,7 @@ public final class SystemTrayServiceImpl implements TrayService {
         }
 
         statusItem = status;
+        packagedItem = packaged;
         icon = trayIcon;
         announce(trayIcon);
     }
@@ -219,6 +248,10 @@ public final class SystemTrayServiceImpl implements TrayService {
         final CopyStats snapshot = stats.lifetime();
         status.setLabel(statusLine(snapshot));
         current.setToolTip(tooltip(snapshot));
+        final MenuItem packaged = packagedItem;
+        if (packaged != null) {
+            packaged.setLabel(packagedLine(lastPackaged.get()));
+        }
     }
 
     private void confirmExit() {
@@ -274,6 +307,15 @@ public final class SystemTrayServiceImpl implements TrayService {
             line.append(String.format(Locale.ROOT, ", %,d failed (see log)", failed));
         }
         return line.toString();
+    }
+
+    /** The packaging line, e.g. {@code Last packaged: 2026-10-14 (9 zips)}. */
+    static String packagedLine(Optional<PackageScheduler.LastPackaged> last) {
+        return last.map(
+                        day ->
+                                "Last packaged: " + day.businessDate() + " (" + day.zips()
+                                        + (day.zips() == 1 ? " zip)" : " zips)"))
+                .orElse("Last packaged: none yet");
     }
 
     /** Hover text, kept inside the Windows 127-character limit. */

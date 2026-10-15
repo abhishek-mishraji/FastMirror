@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 /**
@@ -48,6 +49,14 @@ public final class DailyPackageSchedulerImpl implements PackageScheduler {
     private final Clock clock;
     private final AppLogger logger;
     private final Listener listener;
+    private final Instant notBefore;
+    private final BooleanSupplier copyIdle;
+
+    /** Set once copying has caught up after start-up; from then on packaging is never held back. */
+    private boolean caughtUp;
+
+    /** The UTC date of the last outbox clean-up, so it runs once a day. */
+    private LocalDate cleanedOn;
 
     /** Folders found up to date, with the folder's modified time when they were. */
     private final Map<TypeFolder, Instant> upToDate = new HashMap<>();
@@ -57,6 +66,7 @@ public final class DailyPackageSchedulerImpl implements PackageScheduler {
 
     private ScheduledExecutorService executor;
 
+    /** A scheduler that never waits for copying, for use where nothing is being copied. */
     public DailyPackageSchedulerImpl(
             DayPackager packager,
             PackageLedger ledger,
@@ -64,12 +74,34 @@ public final class DailyPackageSchedulerImpl implements PackageScheduler {
             Clock clock,
             AppLogger logger,
             Listener listener) {
+        this(packager, ledger, config, clock, logger, listener, Instant.MIN, () -> true);
+    }
+
+    /**
+     * @param notBefore no packaging before this moment: start-up plus the stability wait plus two
+     *                  scans, by when every file that was already waiting has been found stable
+     *                  and handed to the copier
+     * @param copyIdle  whether the copier has nothing queued or running; packaging starts at the
+     *                  first check after {@code notBefore} when this holds, so a day being copied
+     *                  after the agent was off is not zipped half-copied
+     */
+    public DailyPackageSchedulerImpl(
+            DayPackager packager,
+            PackageLedger ledger,
+            PackageConfig config,
+            Clock clock,
+            AppLogger logger,
+            Listener listener,
+            Instant notBefore,
+            BooleanSupplier copyIdle) {
         this.packager = Objects.requireNonNull(packager, "packager");
         this.ledger = Objects.requireNonNull(ledger, "ledger");
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
         this.listener = Objects.requireNonNull(listener, "listener");
+        this.notBefore = Objects.requireNonNull(notBefore, "notBefore");
+        this.copyIdle = Objects.requireNonNull(copyIdle, "copyIdle");
     }
 
     @Override
@@ -96,6 +128,15 @@ public final class DailyPackageSchedulerImpl implements PackageScheduler {
     @Override
     public synchronized int checkNow() {
         final Instant now = clock.instant();
+        if (!caughtUp) {
+            if (now.isBefore(notBefore) || !copyIdle.getAsBoolean()) {
+                return 0;
+            }
+            caughtUp = true;
+            logger.info("Copying has caught up; packaging is running (each day at "
+                    + config.packageAtUtc() + " UTC the next day)");
+        }
+        removeOldZips(now);
         final List<TypeFolder> folders;
         try {
             folders = packager.typeFolders();
@@ -147,6 +188,26 @@ public final class DailyPackageSchedulerImpl implements PackageScheduler {
         } catch (final InterruptedException e) {
             running.shutdownNow();
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /** OUTBOX_KEEP_DAYS: once a UTC day, zips of business days older than that leave the outbox. */
+    private void removeOldZips(Instant now) {
+        final LocalDate today = LocalDate.ofInstant(now, ZoneOffset.UTC);
+        if (config.outboxKeepDays() <= 0 || today.equals(cleanedOn)) {
+            return;
+        }
+        cleanedOn = today;
+        try {
+            final int removed = packager.removeZipsBefore(today.minusDays(config.outboxKeepDays()));
+            if (removed > 0) {
+                logger.info(
+                        "Outbox clean-up: removed " + removed + " zip(s) of business days before "
+                                + today.minusDays(config.outboxKeepDays()) + " (OUTBOX_KEEP_DAYS="
+                                + config.outboxKeepDays() + "); S3 is not affected");
+            }
+        } catch (final IOException e) {
+            logger.warn("Outbox clean-up failed; trying again tomorrow: " + e.getMessage());
         }
     }
 

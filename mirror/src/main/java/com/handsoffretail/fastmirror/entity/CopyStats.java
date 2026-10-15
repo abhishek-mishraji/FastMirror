@@ -13,8 +13,15 @@ import java.util.Objects;
 public final class CopyStats {
 
     private final Map<CopyOutcome, Long> counts;
+    private final long packaged;
 
     public CopyStats(Map<CopyOutcome, Long> counts) {
+        this(counts, 0L);
+    }
+
+    /** @param packaged zips moved into the outbox */
+    public CopyStats(Map<CopyOutcome, Long> counts, long packaged) {
+        this.packaged = packaged;
         Objects.requireNonNull(counts, "counts");
         final Map<CopyOutcome, Long> copy = new EnumMap<>(CopyOutcome.class);
         copy.putAll(counts);
@@ -40,6 +47,11 @@ public final class CopyStats {
 
     /** Whether anything at all happened in this window, used to suppress empty log lines. */
     public boolean isEmpty() {
-        return counts().isEmpty();
+        return counts().isEmpty() && packaged == 0L;
+    }
+
+    /** Zips moved into the outbox. */
+    public long packaged() {
+        return packaged;
     }
 }

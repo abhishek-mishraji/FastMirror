@@ -246,6 +246,67 @@ class DailyPackageSchedulerImplTest {
     }
 
     @Test
+    @DisplayName("OUTBOX_KEEP_DAYS removes older days' zips from the outbox, once a day, and never rebuilds them")
+    void keepDays() throws IOException {
+        put(LocalDate.of(2026, 10, 1), "PJR", "old.xml");
+        put(OCT_15, "PJR", "new.xml");
+        at("2026-10-16T08:00:00Z");
+        final PackageConfig keep7 =
+                new PackageConfig(
+                        STORE,
+                        Files.createDirectories(outputs.resolve("outbox")),
+                        Files.createDirectories(outputs.resolve("outbox-staging")),
+                        LocalTime.of(8, 0),
+                        null,
+                        7);
+        Files.writeString(outputs.resolve("outbox").resolve("not-ours.txt"), "left alone");
+        final DailyPackageSchedulerImpl scheduler =
+                new DailyPackageSchedulerImpl(
+                        new ZipDayPackagerImpl(mirror, keep7),
+                        FilePackageLedgerImpl.open(state, logger),
+                        keep7,
+                        clock,
+                        logger,
+                        packaged::add);
+        assertEquals(2, scheduler.checkNow());
+
+        clock.advance(Duration.ofDays(1));
+        assertEquals(0, scheduler.checkNow());
+
+        assertEquals(List.of("not-ours.txt", "wolf_800_NY-13208_PJR_2026-10-15_v1.zip"), zips());
+        assertFalse(
+                Files.exists(outputs.resolve("outbox").resolve(STORE).resolve("2026").resolve("october").resolve("2026-10-01")),
+                "the emptied day folder is removed too");
+    }
+
+    @Test
+    @DisplayName("nothing is packaged until copying has caught up after start-up")
+    void waitsForCopying() throws IOException {
+        put(OCT_15, "PJR", "PJR1.xml");
+        at("2026-10-16T09:00:00Z");
+        final boolean[] idle = {false};
+        final PackageConfig config = config(null);
+        final DailyPackageSchedulerImpl scheduler =
+                new DailyPackageSchedulerImpl(
+                        new ZipDayPackagerImpl(mirror, config),
+                        FilePackageLedgerImpl.open(state, logger),
+                        config,
+                        clock,
+                        logger,
+                        packaged::add,
+                        Instant.parse("2026-10-16T09:05:00Z"),
+                        () -> idle[0]);
+
+        idle[0] = true;
+        assertEquals(0, scheduler.checkNow(), "before the stability wait and two scans");
+        at("2026-10-16T09:05:00Z");
+        idle[0] = false;
+        assertEquals(0, scheduler.checkNow(), "while the copier is still busy");
+        idle[0] = true;
+        assertEquals(1, scheduler.checkNow());
+    }
+
+    @Test
     @DisplayName("an empty type folder makes no zip")
     void emptyFolder() throws IOException {
         Files.createDirectories(new TypeFolder(OCT_15, "PJR").resolveIn(mirror));

@@ -135,6 +135,11 @@ public final class AgentHarness implements AutoCloseable {
         handle.scanNow();
     }
 
+    /** Runs one packaging check on the calling thread; the zips moved into the outbox. */
+    public int packageNow() {
+        return handle.packageNow();
+    }
+
     public void advance(Duration duration) {
         clock.advance(duration);
     }

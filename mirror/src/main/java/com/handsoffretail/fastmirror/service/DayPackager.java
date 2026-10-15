@@ -6,6 +6,7 @@ import com.handsoffretail.fastmirror.entity.TypeFolder;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -56,4 +57,12 @@ public interface DayPackager {
 
     /** Removes staging files left by a build that was interrupted, such as by a power cut. */
     void clearStaging() throws IOException;
+
+    /**
+     * Removes this store's zips of business days before {@code cutoff} from the outbox, and the
+     * folders that leaves empty. Nothing else in the outbox is touched, and S3 never is.
+     *
+     * @return how many zips were removed
+     */
+    int removeZipsBefore(LocalDate cutoff) throws IOException;
 }
