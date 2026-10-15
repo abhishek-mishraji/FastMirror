@@ -63,6 +63,7 @@ import java.util.regex.Pattern;
  * @param statsIntervalMs     how often the counter summary is logged
  * @param logFolder           log destination
  * @param stateFolder         where the copy ledger lives; outside both the source and the mirror
+ * @param packaging           day packaging into the outbox; {@code null} when it is off
  * @param warnings            non-fatal configuration notes to log at startup
  */
 public record MirrorConfig(
@@ -93,6 +94,7 @@ public record MirrorConfig(
         long statsIntervalMs,
         Path logFolder,
         Path stateFolder,
+        PackageConfig packaging,
         List<String> warnings) {
 
     public static final String KEY_SOURCE_FOLDER = "SOURCE_FOLDER";
@@ -121,6 +123,13 @@ public record MirrorConfig(
     public static final String KEY_STATS_INTERVAL_MS = "STATS_INTERVAL_MS";
     public static final String KEY_LOG_FOLDER = "LOG_FOLDER";
     public static final String KEY_STATE_FOLDER = "STATE_FOLDER";
+    public static final String KEY_PACKAGE_ENABLED = "PACKAGE_ENABLED";
+    public static final String KEY_STORE_FOLDER = "STORE_FOLDER";
+    public static final String KEY_OUTBOX_FOLDER = "OUTBOX_FOLDER";
+    public static final String KEY_PACKAGE_STAGING_FOLDER = "PACKAGE_STAGING_FOLDER";
+    public static final String KEY_PACKAGE_AT_UTC = "PACKAGE_AT_UTC";
+    public static final String KEY_PACKAGE_FROM_DATE = "PACKAGE_FROM_DATE";
+    public static final String KEY_OUTBOX_KEEP_DAYS = "OUTBOX_KEEP_DAYS";
 
     public static final String DEFAULT_INCLUDE_EXTENSIONS = "xml";
     public static final String DEFAULT_SUBFOLDER_EXTENSIONS = "pdf";
@@ -137,12 +146,18 @@ public record MirrorConfig(
     public static final long DEFAULT_STATS_INTERVAL_MS = 60_000L;
     public static final String DEFAULT_LOG_FOLDER = "logs";
     public static final String DEFAULT_STATE_FOLDER = "state";
+    public static final LocalTime DEFAULT_PACKAGE_AT_UTC = LocalTime.of(8, 0);
+    public static final int DEFAULT_OUTBOX_KEEP_DAYS = 0;
+    /** Appended to the outbox folder's name for the default staging folder beside it. */
+    public static final String STAGING_FOLDER_SUFFIX = "-staging";
 
     /** The suffix of FastMirror's own staging files. */
     public static final String STAGING_SUFFIX = ".fmtmp";
 
     private static final Pattern PREFIX = Pattern.compile("[A-Za-z0-9]{3}");
     private static final Pattern EXTENSION = Pattern.compile("[A-Za-z0-9]{1,16}");
+    /** Safe in a Windows folder name, a zip name and an S3 key alike. */
+    private static final Pattern STORE = Pattern.compile("[A-Za-z0-9_.-]{1,100}");
 
     public MirrorConfig {
         Objects.requireNonNull(sourceFolder, "sourceFolder");
@@ -326,6 +341,9 @@ public record MirrorConfig(
         final Map<String, Path> externalSubfolders =
                 externalFolders(subfolders.external(), source, mirror, stateFolder, warnings);
 
+        final PackageConfig packaging =
+                packaging(lookup, source, mirror, stateFolder, externalSubfolders);
+
         return new MirrorConfig(
                 source,
                 mirror,
@@ -354,7 +372,13 @@ public record MirrorConfig(
                 statsIntervalMs,
                 logFolder,
                 stateFolder,
+                packaging,
                 warnings);
+    }
+
+    /** Whether day packaging is on. */
+    public boolean packagingEnabled() {
+        return packaging != null;
     }
 
     /** Whether a file of this size is within the copy limit. */
@@ -400,12 +424,21 @@ public record MirrorConfig(
 
     /** Confirms the mirror is writable with a probe file, which is safe because the mirror is ours. */
     private static void validateMirrorWritable(Path mirror) {
+        validateWritable(mirror, KEY_MIRROR_FOLDER);
+    }
+
+    /**
+     * Confirms a folder of ours is writable with a probe file. The probe's name starts with
+     * {@code ~$}, the one kind of name the S3 agent never uploads, because it can appear in the
+     * outbox for an instant.
+     */
+    private static void validateWritable(Path folder, String key) {
         Path probe = null;
         try {
-            probe = Files.createTempFile(mirror, "fastmirror-probe-", STAGING_SUFFIX);
+            probe = Files.createTempFile(folder, "~$fastmirror-probe-", STAGING_SUFFIX);
         } catch (final IOException e) {
             throw new ConfigException(
-                    KEY_MIRROR_FOLDER + " is not writable: " + mirror
+                    key + " is not writable: " + folder
                             + " (" + e.getMessage() + "). Check the account's permissions"
                             + " and the free space on that volume.", e);
         } finally {
@@ -437,11 +470,15 @@ public record MirrorConfig(
     }
 
     private static String required(Function<String, String> lookup, String key) {
+        return required(lookup, key, "C:/path/to/folder");
+    }
+
+    private static String required(Function<String, String> lookup, String key, String example) {
         final String raw = lookup.apply(key);
         if (raw == null || raw.isBlank()) {
             throw new ConfigException(
                     key + " is required but was not set. Add it to .env, for example"
-                            + " " + key + "=C:/path/to/folder");
+                            + " " + key + "=" + example);
         }
         return raw.trim();
     }
@@ -587,10 +624,94 @@ public record MirrorConfig(
         return folders;
     }
 
+    /**
+     * Day packaging, or {@code null} when {@code PACKAGE_ENABLED} is not {@code true}. When it is
+     * off nothing else about it is read or checked.
+     */
+    private static PackageConfig packaging(
+            Function<String, String> lookup,
+            Path source,
+            Path mirror,
+            Path state,
+            Map<String, Path> externalSubfolders) {
+        final String enabled = value(lookup, KEY_PACKAGE_ENABLED, "false");
+        if (enabled.equalsIgnoreCase("false")) {
+            return null;
+        }
+        if (!enabled.equalsIgnoreCase("true")) {
+            throw new ConfigException(
+                    KEY_PACKAGE_ENABLED + " must be true or false, was '" + enabled + "'.");
+        }
+
+        final String store = required(lookup, KEY_STORE_FOLDER, "wolf_800_NY-13208");
+        if (!STORE.matcher(store).matches() || store.equals(".") || store.equals("..")) {
+            throw new ConfigException(
+                    KEY_STORE_FOLDER + " may use only letters, digits, _ - and . (it names a folder,"
+                            + " every zip and the S3 path), was '" + store + "'. Example: "
+                            + KEY_STORE_FOLDER + "=wolf_800_NY-13208");
+        }
+
+        final Path outboxInput =
+                toPath(required(lookup, KEY_OUTBOX_FOLDER, "C:/HOR/outbox"), KEY_OUTBOX_FOLDER);
+        createDirectoryIfMissing(outboxInput, KEY_OUTBOX_FOLDER);
+        final Path outbox = toRealPath(outboxInput, KEY_OUTBOX_FOLDER);
+
+        final String rawStaging = lookup.apply(KEY_PACKAGE_STAGING_FOLDER);
+        final Path stagingInput =
+                rawStaging == null || rawStaging.isBlank()
+                        ? outbox.resolveSibling(outbox.getFileName() + STAGING_FOLDER_SUFFIX)
+                        : toPath(rawStaging.trim(), KEY_PACKAGE_STAGING_FOLDER);
+        // The finished zip is moved into the outbox in one step, which only works on one drive.
+        if (!Objects.equals(outbox.getRoot(), stagingInput.getRoot())) {
+            throw new ConfigException(
+                    KEY_PACKAGE_STAGING_FOLDER + " (" + stagingInput + ") must be on the same drive as "
+                            + KEY_OUTBOX_FOLDER + " (" + outbox + "), so that a finished zip appears in"
+                            + " the outbox in one step. Leave it empty to use " + outbox.getFileName()
+                            + STAGING_FOLDER_SUFFIX + " beside the outbox.");
+        }
+        createDirectoryIfMissing(stagingInput, KEY_PACKAGE_STAGING_FOLDER);
+        final Path staging = toRealPath(stagingInput, KEY_PACKAGE_STAGING_FOLDER);
+
+        // Packaging reads the mirror only, and its output must never be copied, mirrored, or
+        // mistaken for the ledger; and the S3 agent must never see a zip being built.
+        final Map<String, Path> outputs = new LinkedHashMap<>();
+        outputs.put(KEY_OUTBOX_FOLDER, outbox);
+        outputs.put(KEY_PACKAGE_STAGING_FOLDER, staging);
+        final String apart = "Packaging output must stay apart from the folders FastMirror reads.";
+        for (final Map.Entry<String, Path> output : outputs.entrySet()) {
+            final String key = output.getKey();
+            final Path folder = output.getValue();
+            validateNoOverlap(
+                    source, KEY_SOURCE_FOLDER, folder, key,
+                    "FastMirror never writes inside the source folder.");
+            validateNoOverlap(mirror, KEY_MIRROR_FOLDER, folder, key, apart);
+            validateNoOverlap(state, KEY_STATE_FOLDER, folder, key, "The ledgers must not be uploaded.");
+            for (final Path external : externalSubfolders.values()) {
+                validateNoOverlap(external, KEY_INCLUDE_SUBFOLDERS, folder, key, apart);
+            }
+        }
+        validateNoOverlap(
+                outbox, KEY_OUTBOX_FOLDER, staging, KEY_PACKAGE_STAGING_FOLDER,
+                "The S3 agent would upload half-built zips.");
+        validateWritable(outbox, KEY_OUTBOX_FOLDER);
+        validateWritable(staging, KEY_PACKAGE_STAGING_FOLDER);
+
+        final LocalTime packageAt = timeOfDay(lookup, KEY_PACKAGE_AT_UTC, DEFAULT_PACKAGE_AT_UTC);
+        final LocalDate packageFrom = date(lookup, KEY_PACKAGE_FROM_DATE);
+        final int keepDays =
+                intInRange(lookup, KEY_OUTBOX_KEEP_DAYS, DEFAULT_OUTBOX_KEEP_DAYS, 0, 36_500);
+
+        return new PackageConfig(store, outbox, staging, packageAt, packageFrom, keepDays);
+    }
+
     private static LocalTime timeOfDay(Function<String, String> lookup, String key) {
+        return timeOfDay(lookup, key, LocalTime.MIDNIGHT);
+    }
+
+    private static LocalTime timeOfDay(Function<String, String> lookup, String key, LocalTime fallback) {
         final String raw = lookup.apply(key);
         if (raw == null || raw.isBlank()) {
-            return LocalTime.MIDNIGHT;
+            return fallback;
         }
         try {
             return LocalTime.parse(raw.trim());
