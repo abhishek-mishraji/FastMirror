@@ -27,8 +27,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Acceptance criterion 2, on the real Tiki sample files and the shipped verifone-tiki.env: each
- * report and the CPJ land in their own day/type folder and their own zip. The expected date is
- * read here straight from each file (periodEndDate, else closedTime), independently of the agent.
+ * report, the CPJ and the PJR land in their own day/type folder and their own zip. The expected date
+ * is read here straight from each file (periodEndDate, else closedTime, else the first date),
+ * independently of the agent.
  * Skipped where the sample files are not present.
  */
 class TikiRealDataTest {
@@ -39,6 +40,8 @@ class TikiRealDataTest {
     private static final String STORE = "Tiki_8730_IN-47872";
     private static final Pattern DATE =
             Pattern.compile("periodEndDate=\"(\\d{4})-(\\d{2})-(\\d{2})|<(?:\\w+:)?closedTime>(\\d{4})-(\\d{2})-(\\d{2})");
+    /** The PJR has neither: its first transaction's {@code <date>}. */
+    private static final Pattern FIRST_DATE = Pattern.compile("<(?:\\w+:)?date>(\\d{4})-(\\d{2})-(\\d{2})");
 
     @TempDir Path sourceRoot;
     @TempDir Path mirrorRoot;
@@ -46,7 +49,7 @@ class TikiRealDataTest {
     @TempDir Path outputs;
 
     @Test
-    @DisplayName("Tiki samples: every report and the CPJ in its own day/type folder and its own zip")
+    @DisplayName("Tiki samples: every report, the CPJ and the PJR in its own day/type folder and its own zip")
     void tikiSamples() throws Exception {
         assumeTrue(Files.isDirectory(SAMPLES), "the Tiki sample files are not on this PC");
 
@@ -67,11 +70,15 @@ class TikiRealDataTest {
                     continue;
                 }
                 Files.copy(file, sourceRoot.resolve(name));
-                final Matcher date = DATE.matcher(head(file));
+                final String head = head(file);
+                Matcher date = DATE.matcher(head);
                 if (!date.find()) {
-                    continue;
+                    date = FIRST_DATE.matcher(head);
+                    if (!date.find()) {
+                        continue;
+                    }
                 }
-                final int g = date.group(1) != null ? 1 : 4;
+                final int g = date.groupCount() == 3 || date.group(1) != null ? 1 : 4;
                 final String day = date.group(g) + "-" + date.group(g + 1) + "-" + date.group(g + 2);
                 final String month =
                         java.time.LocalDate.parse(day).getMonth().getDisplayName(java.time.format.TextStyle.FULL, Locale.ENGLISH)
@@ -81,7 +88,7 @@ class TikiRealDataTest {
                                 + STORE + "_" + type + "_" + day + "_v1.zip");
             }
         }
-        assertEquals(10, expected.size(), "the ten Tiki report types and the CPJ: " + expected);
+        assertEquals(11, expected.size(), "the Tiki report types, the CPJ and the PJR: " + expected);
 
         // After every sample's day, so all of them are due.
         final MutableClock clock = new MutableClock(Instant.parse("2026-10-16T07:00:00Z"), ZoneOffset.UTC);
