@@ -11,8 +11,13 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -28,8 +33,9 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Acceptance criterion 2, on the real Tiki sample files and the shipped verifone-tiki.env: each
  * report, the CPJ and the PJR land in their own day/type folder and their own zip. The expected date
- * is read here straight from each file (periodEndDate, else closedTime, else the first date),
- * independently of the agent.
+ * is worked out here independently of the agent: for reports and the CPJ, read straight from each
+ * file (periodEndDate, else closedTime); for CREATED_DATE_PREFIXES (the PJR), the day the slice was
+ * written, which its name records.
  * Skipped where the sample files are not present.
  */
 class TikiRealDataTest {
@@ -40,8 +46,10 @@ class TikiRealDataTest {
     private static final String STORE = "Tiki_8730_IN-47872";
     private static final Pattern DATE =
             Pattern.compile("periodEndDate=\"(\\d{4})-(\\d{2})-(\\d{2})|<(?:\\w+:)?closedTime>(\\d{4})-(\\d{2})-(\\d{2})");
-    /** The PJR has neither: its first transaction's {@code <date>}. */
-    private static final Pattern FIRST_DATE = Pattern.compile("<(?:\\w+:)?date>(\\d{4})-(\\d{2})-(\\d{2})");
+    /** A PJR slice's name: the New York date and the minute of that day it was written. */
+    private static final Pattern SLICE_NAME =
+            Pattern.compile("PJR(\\d{2})-(\\d{2})-(\\d{4})-(\\d+)\\.xml", Pattern.CASE_INSENSITIVE);
+    private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
 
     @TempDir Path sourceRoot;
     @TempDir Path mirrorRoot;
@@ -60,6 +68,7 @@ class TikiRealDataTest {
         settings.put("MIRROR_FOLDER", mirrorRoot.toString());
         settings.put("OUTBOX_FOLDER", outputs.resolve("outbox").toString());
         final List<String> prefixes = List.of(settings.get("INCLUDE_PREFIXES").split(","));
+        final List<String> byCreation = List.of(settings.getOrDefault("CREATED_DATE_PREFIXES", "").split(","));
 
         final List<String> expected = new ArrayList<>();
         try (Stream<Path> files = Files.list(SAMPLES)) {
@@ -69,22 +78,37 @@ class TikiRealDataTest {
                 if (!prefixes.contains(type)) {
                     continue;
                 }
-                Files.copy(file, sourceRoot.resolve(name));
-                final String head = head(file);
-                Matcher date = DATE.matcher(head);
-                if (!date.find()) {
-                    date = FIRST_DATE.matcher(head);
+                final Path copy = sourceRoot.resolve(name);
+                Files.copy(file, copy);
+                final LocalDate day;
+                if (byCreation.contains(type)) {
+                    // The copy is created now. Give it the time POS Link wrote the original, which
+                    // the name records, as the original has on the store PC.
+                    final Matcher slice = SLICE_NAME.matcher(name);
+                    if (!slice.matches()) {
+                        continue;
+                    }
+                    final ZonedDateTime written =
+                            LocalDate.of(
+                                            Integer.parseInt(slice.group(3)),
+                                            Integer.parseInt(slice.group(1)),
+                                            Integer.parseInt(slice.group(2)))
+                                    .atStartOfDay(NEW_YORK)
+                                    .plusMinutes(Integer.parseInt(slice.group(4)));
+                    Files.setAttribute(copy, "basic:creationTime", FileTime.from(written.toInstant()));
+                    day = written.toLocalDate();
+                } else {
+                    final Matcher date = DATE.matcher(head(file));
                     if (!date.find()) {
                         continue;
                     }
+                    final int g = date.group(1) != null ? 1 : 4;
+                    day = LocalDate.parse(date.group(g) + "-" + date.group(g + 1) + "-" + date.group(g + 2));
                 }
-                final int g = date.groupCount() == 3 || date.group(1) != null ? 1 : 4;
-                final String day = date.group(g) + "-" + date.group(g + 1) + "-" + date.group(g + 2);
                 final String month =
-                        java.time.LocalDate.parse(day).getMonth().getDisplayName(java.time.format.TextStyle.FULL, Locale.ENGLISH)
-                                .toLowerCase(Locale.ROOT);
+                        day.getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH).toLowerCase(Locale.ROOT);
                 expected.add(
-                        STORE + "/" + date.group(g) + "/" + month + "/" + day + "/" + type + "/"
+                        STORE + "/" + day.getYear() + "/" + month + "/" + day + "/" + type + "/"
                                 + STORE + "_" + type + "_" + day + "_v1.zip");
             }
         }

@@ -14,6 +14,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,6 +28,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * a file for 30 September that is only written on 1 October still belongs in September. Which one
  * applies depends on the POS, and is set per store in {@code .env}, so the same code serves every
  * store.
+ *
+ * <p>Root files whose prefix is in {@code CREATED_DATE_PREFIXES} are dated by their creation time
+ * whatever the root rule says. Verifone's PJR slices need this: each repeats the journal since an
+ * earlier transaction, so the first date inside can be hours before the slice was written, and a
+ * slice written after a day was zipped would otherwise land in that day.
  */
 public final class FileDateResolverImpl implements FileDateResolver {
 
@@ -40,8 +46,14 @@ public final class FileDateResolverImpl implements FileDateResolver {
 
     private final ZoneId timeZone;
     private final LocalTime businessDayStartsAt;
+    /** The rule for {@code CREATED_DATE_PREFIXES} files. */
+    private static final Rule BY_CREATION = new Rule(DateSource.CREATED, null, null, null, null);
+
+    private static final int PREFIX_LENGTH = 3;
+
     private final Rule root;
     private final Rule subfolder;
+    private final Set<String> createdDatePrefixes;
     private final int contentScanBytes;
     private final FileCopier copier;
     private final AppLogger logger;
@@ -70,6 +82,7 @@ public final class FileDateResolverImpl implements FileDateResolver {
                         config.subfolderContentDateFields(),
                         MirrorConfig.KEY_SUBFOLDER_FILENAME_DATE_PATTERN,
                         MirrorConfig.KEY_SUBFOLDER_CONTENT_DATE_FIELDS);
+        this.createdDatePrefixes = Set.copyOf(config.createdDatePrefixes());
         this.contentScanBytes = config.contentScanBytes();
         this.copier = Objects.requireNonNull(copier, "copier");
         this.logger = Objects.requireNonNull(logger, "logger");
@@ -127,7 +140,15 @@ public final class FileDateResolverImpl implements FileDateResolver {
     }
 
     private Rule ruleFor(Path relative) {
-        return relative.getNameCount() > 1 ? subfolder : root;
+        if (relative.getNameCount() > 1) {
+            return subfolder;
+        }
+        final String name = relative.getFileName().toString();
+        if (name.length() >= PREFIX_LENGTH
+                && createdDatePrefixes.contains(name.substring(0, PREFIX_LENGTH).toUpperCase(Locale.ROOT))) {
+            return BY_CREATION;
+        }
+        return root;
     }
 
     private LocalDate created(FileTime creationTime) {

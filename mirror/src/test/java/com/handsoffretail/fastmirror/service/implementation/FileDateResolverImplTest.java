@@ -183,6 +183,41 @@ class FileDateResolverImplTest {
     }
 
     @Test
+    @DisplayName("CREATED_DATE_PREFIXES: a Tiki PJR slice is dated by when it was written, not its first <date>")
+    void createdDatePrefixes() {
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, "SUM,PJR");
+        values.put(MirrorConfig.KEY_CONTENT_DATE_FIELDS, "periodEndDate,closedTime,date");
+        // The real slice that made 2026-10-16 v2: written 03:59 on 17 Oct New York time, but its
+        // first <date> is 22:23 on the 16th, because it repeats the journal since then.
+        final Path slice = Path.of("PJR10-17-2026-239.xml");
+        final FileTime written = FileTime.from(Instant.parse("2026-10-17T07:59:04Z"));
+        final LedgerKey sliceKey = LedgerKey.of(slice, written.toMillis(), 284_678L);
+        final String inside = "<transSet longId=\"CURRENT\"><trans><trHeader><date>2026-10-16T22:23:50-04:00</date>";
+
+        copier.answer(inside);
+        assertEquals(
+                Optional.of(LocalDate.of(2026, 10, 16)),
+                resolver().dateOf(slice, sliceKey, written),
+                "without the setting: the first <date> inside, as before");
+
+        values.put(MirrorConfig.KEY_CREATED_DATE_PREFIXES, "PJR");
+        copier.reads.set(0);
+        final FileDateResolverImpl resolver = resolver();
+        assertEquals(Optional.of(LocalDate.of(2026, 10, 17)), resolver.knownDate(slice, sliceKey, written));
+        assertEquals(
+                Optional.of(LocalDate.of(2026, 10, 17)),
+                resolver.knownDate(Path.of("pjr10-17-2026-239.xml"), sliceKey, written),
+                "prefixes match whatever the case");
+        assertEquals(0, copier.reads.get(), "never read");
+
+        copier.answer("<vs:period periodEndDate=\"2026-10-16T21:40:12-04:00\"/>");
+        assertEquals(
+                Optional.of(LocalDate.of(2026, 10, 16)),
+                resolver.dateOf(Path.of("SUM2026-10-16-640.xml"), KEY, written),
+                "other prefixes still use the date inside");
+    }
+
+    @Test
     @DisplayName("CREATED and FILENAME never read the file")
     void otherSourcesDoNotRead() {
         values.put(MirrorConfig.KEY_DATE_SOURCE, "CREATED");

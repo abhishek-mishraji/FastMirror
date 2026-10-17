@@ -53,7 +53,9 @@ import java.util.regex.Pattern;
  * @param businessDayStartsAt a timestamp before this time of day belongs to the previous business
  *                            day; applies to creation times and file-name times, never to
  *                            content dates
- * @param stabilityMinutes    how long a file's size and timestamp must stay unchanged before copying
+ * @param createdDatePrefixes root-file prefixes, upper case, dated by their creation time in
+ *                            {@code timeZone} whatever {@code dateSource} says; empty means none
+ * @param stabilityMinutes   how long a file's size and timestamp must stay unchanged before copying
  * @param scanIntervalSeconds how often the source folder is scanned
  * @param copyWorkers         copy threads, and therefore the cap on concurrently open source files
  * @param openRetryAttempts   extra attempts to open a locked source file
@@ -84,6 +86,7 @@ public record MirrorConfig(
         ContentDateFields subfolderContentDateFields,
         int contentScanBytes,
         LocalTime businessDayStartsAt,
+        List<String> createdDatePrefixes,
         int stabilityMinutes,
         int scanIntervalSeconds,
         int copyWorkers,
@@ -113,6 +116,7 @@ public record MirrorConfig(
     public static final String KEY_SUBFOLDER_CONTENT_DATE_FIELDS = "SUBFOLDER_CONTENT_DATE_FIELDS";
     public static final String KEY_CONTENT_SCAN_BYTES = "CONTENT_SCAN_BYTES";
     public static final String KEY_BUSINESS_DAY_STARTS_AT = "BUSINESS_DAY_STARTS_AT";
+    public static final String KEY_CREATED_DATE_PREFIXES = "CREATED_DATE_PREFIXES";
     public static final String KEY_STABILITY_MINUTES = "STABILITY_MINUTES";
     public static final String KEY_SCAN_INTERVAL_SECONDS = "SCAN_INTERVAL_SECONDS";
     public static final String KEY_COPY_WORKERS = "COPY_WORKERS";
@@ -184,6 +188,8 @@ public record MirrorConfig(
         includeSubfolders = List.copyOf(Objects.requireNonNull(includeSubfolders, "includeSubfolders"));
         externalSubfolders = Map.copyOf(Objects.requireNonNull(externalSubfolders, "externalSubfolders"));
         Objects.requireNonNull(businessDayStartsAt, "businessDayStartsAt");
+        createdDatePrefixes =
+                List.copyOf(Objects.requireNonNull(createdDatePrefixes, "createdDatePrefixes"));
         subfolderExtensions =
                 List.copyOf(Objects.requireNonNull(subfolderExtensions, "subfolderExtensions"));
         excludePatterns = List.copyOf(Objects.requireNonNull(excludePatterns, "excludePatterns"));
@@ -250,7 +256,8 @@ public record MirrorConfig(
         validateMirrorWritable(mirror);
 
         // What to copy.
-        final List<String> includePrefixes = prefixes(value(lookup, KEY_INCLUDE_PREFIXES, ""));
+        final List<String> includePrefixes =
+                prefixes(value(lookup, KEY_INCLUDE_PREFIXES, ""), KEY_INCLUDE_PREFIXES);
         final List<String> includeExtensions =
                 extensions(value(lookup, KEY_INCLUDE_EXTENSIONS, DEFAULT_INCLUDE_EXTENSIONS),
                         KEY_INCLUDE_EXTENSIONS);
@@ -282,6 +289,17 @@ public record MirrorConfig(
                         KEY_SUBFOLDER_DATE_SOURCE,
                         warnings);
         final LocalTime businessDayStartsAt = timeOfDay(lookup, KEY_BUSINESS_DAY_STARTS_AT);
+        // A prefix that is not copied cannot be dated; noted rather than refused, because it
+        // changes nothing about what is copied.
+        final List<String> createdDatePrefixes =
+                prefixes(value(lookup, KEY_CREATED_DATE_PREFIXES, ""), KEY_CREATED_DATE_PREFIXES);
+        for (final String prefix : createdDatePrefixes) {
+            if (!includePrefixes.contains(prefix)) {
+                warnings.add(
+                        KEY_CREATED_DATE_PREFIXES + " names " + prefix + ", which is not in "
+                                + KEY_INCLUDE_PREFIXES + ", so it has no effect.");
+            }
+        }
         final int contentScanBytes =
                 intInRange(
                         lookup, KEY_CONTENT_SCAN_BYTES, DEFAULT_CONTENT_SCAN_BYTES, 1_024, 16_777_216);
@@ -362,6 +380,7 @@ public record MirrorConfig(
                 subfolderContentDateFields,
                 contentScanBytes,
                 businessDayStartsAt,
+                createdDatePrefixes,
                 stabilityMinutes,
                 scanIntervalSeconds,
                 copyWorkers,
@@ -505,13 +524,13 @@ public record MirrorConfig(
         }
     }
 
-    private static List<String> prefixes(String raw) {
+    private static List<String> prefixes(String raw, String key) {
         final Set<String> prefixes = new LinkedHashSet<>();
         for (final String prefix : splitList(raw)) {
             if (!PREFIX.matcher(prefix).matches()) {
                 throw new ConfigException(
-                        KEY_INCLUDE_PREFIXES + " entries must be exactly 3 letters or digits, was '"
-                                + prefix + "'. Example: " + KEY_INCLUDE_PREFIXES + "=CPJ,SUM,HRS");
+                        key + " entries must be exactly 3 letters or digits, was '"
+                                + prefix + "'. Example: " + key + "=CPJ,SUM,HRS");
             }
             prefixes.add(prefix.toUpperCase(Locale.ROOT));
         }

@@ -64,12 +64,13 @@ class EnvExamplesTest {
     }
 
     @Test
-    @DisplayName("verifone-tiki.env: business date from periodEndDate, then closedTime, then date")
+    @DisplayName("verifone-tiki.env: business date from periodEndDate, then closedTime; PJR by creation time")
     void verifone() throws IOException {
         final MirrorConfig config = loadWithLocalFolders(read("verifone-tiki.env"));
 
         assertEquals(DateSource.CONTENT, config.dateSource());
         assertEquals(List.of("periodEndDate", "closedTime", "date"), config.contentDateFields().names());
+        assertEquals(List.of("PJR"), config.createdDatePrefixes());
         assertEquals(
                 List.of("CPJ", "SUM", "MCM", "ISM", "MSM", "HRS", "FGM", "FCF", "LYT", "TPM", "PJR"),
                 config.includePrefixes());

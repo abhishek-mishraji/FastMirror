@@ -61,12 +61,12 @@
     </jre>
 
     <versionInfo>
-        <fileVersion>3.0.0.0</fileVersion>
-        <txtFileVersion>3.0.0</txtFileVersion>
+        <fileVersion>3.1.0.0</fileVersion>
+        <txtFileVersion>3.1.0</txtFileVersion>
         <fileDescription>FastMirror - POS file copy and day packaging agent</fileDescription>
         <copyright>Hands Off Retail</copyright>
-        <productVersion>3.0.0.0</productVersion>
-        <txtProductVersion>3.0.0</txtProductVersion>
+        <productVersion>3.1.0.0</productVersion>
+        <txtProductVersion>3.1.0</txtProductVersion>
         <productName>FastMirror</productName>
         <companyName>Hands Off Retail</companyName>
         <internalName>FastMirror</internalName>

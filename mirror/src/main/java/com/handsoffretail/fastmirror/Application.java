@@ -387,7 +387,11 @@ public final class Application {
                         config.dateSource(),
                         config.fileNameDatePattern(),
                         config.contentDateFields(),
-                        config);
+                        config)
+                + (config.createdDatePrefixes().isEmpty()
+                        ? ""
+                        : ", " + String.join(",", config.createdDatePrefixes()) + ": "
+                                + describe(DateSource.CREATED, null, null, config));
         if (config.includeSubfolders().isEmpty()) {
             return root;
         }

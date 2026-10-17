@@ -299,6 +299,42 @@ class MirrorConfigTest {
     }
 
     @Test
+    @DisplayName("CREATED_DATE_PREFIXES: none by default; trimmed, upper-cased and de-duplicated")
+    void createdDatePrefixes() {
+        assertEquals(List.of(), load().createdDatePrefixes());
+
+        values.put(MirrorConfig.KEY_INCLUDE_PREFIXES, "CPJ,PJR");
+        values.put(MirrorConfig.KEY_CREATED_DATE_PREFIXES, " pjr, PJR ,");
+        final MirrorConfig config = load();
+
+        assertEquals(List.of("PJR"), config.createdDatePrefixes());
+        assertEquals(List.of(), config.warnings());
+    }
+
+    @Test
+    @DisplayName("CREATED_DATE_PREFIXES: a bad entry is rejected and names the key")
+    void createdDatePrefixesRejectsBadEntry() {
+        values.put(MirrorConfig.KEY_CREATED_DATE_PREFIXES, "PJRX");
+
+        final ConfigException thrown = assertThrows(ConfigException.class, this::load);
+
+        assertTrue(thrown.getMessage().contains(MirrorConfig.KEY_CREATED_DATE_PREFIXES), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("exactly 3"), thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("CREATED_DATE_PREFIXES: a prefix that is not copied is a warning, not a refusal")
+    void createdDatePrefixNotCopied() {
+        values.put(MirrorConfig.KEY_CREATED_DATE_PREFIXES, "PJR");
+
+        final MirrorConfig config = load();
+
+        assertEquals(List.of("PJR"), config.createdDatePrefixes());
+        assertEquals(1, config.warnings().size());
+        assertTrue(config.warnings().get(0).contains("not in " + MirrorConfig.KEY_INCLUDE_PREFIXES));
+    }
+
+    @Test
     @DisplayName("no prefixes and no subfolders means nothing to copy, which refuses to start")
     void nothingToCopy() {
         values.remove(MirrorConfig.KEY_INCLUDE_PREFIXES);
